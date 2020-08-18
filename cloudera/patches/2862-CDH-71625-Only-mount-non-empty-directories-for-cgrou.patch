@@ -1,0 +1,110 @@
+From 400a7e6826f4c29f79c9db893587e74a537ba714 Mon Sep 17 00:00:00 2001
+From: Robert Kanter <rkanter@apache.org>
+Date: Mon, 9 Jul 2018 10:37:20 -0700
+Subject: [PATCH 2862/2863] CDH-71625,Only mount non-empty directories for
+ cgroups (miklos.szegedi@cloudera.com via rkanter)
+
+(cherry picked from commit 0838fe833738e04f5e6f6408e97866d77bebbf30)
+(cherry picked from commit c1dc4ca2c6080377159157ce97bf5d72fa3285a1)
+(cherry picked from commit 92f02f97fd8e8306fda7374b5180a633622f9636)
+(cherry picked from commit 4328a7e0ed755883d9cf6c84e1c07b34f6368266)
+(cherry picked from commit 560ecf93d248c0f5ca66b521609eb228005c211b)
+
+==C5_APPROVED_BUGFIX==
+
+Change-Id: Ie15499e988418e1b8b5c401931e38ff4ada43519
+(cherry picked from commit e580cb0ed9daaf2102f32ca0f71f43c5f02929ce)
+---
+ .../container-executor/impl/container-executor.c   |   30 +++++++++++++++++++-
+ .../test/test-container-executor.c                 |   20 +++++++++++++
+ 2 files changed, 49 insertions(+), 1 deletion(-)
+
+diff --git a/hadoop-yarn-project/hadoop-yarn/hadoop-yarn-server/hadoop-yarn-server-nodemanager/src/main/native/container-executor/impl/container-executor.c b/hadoop-yarn-project/hadoop-yarn/hadoop-yarn-server/hadoop-yarn-server-nodemanager/src/main/native/container-executor/impl/container-executor.c
+index 96e3c53..5ac034d 100644
+--- a/hadoop-yarn-project/hadoop-yarn/hadoop-yarn-server/hadoop-yarn-server-nodemanager/src/main/native/container-executor/impl/container-executor.c
++++ b/hadoop-yarn-project/hadoop-yarn/hadoop-yarn-server/hadoop-yarn-server-nodemanager/src/main/native/container-executor/impl/container-executor.c
+@@ -1905,6 +1905,28 @@ void chown_dir_contents(const char *dir_path, uid_t uid, gid_t gid) {
+   free(path_tmp);
+ }
+ 
++int is_empty(char *target_dir) {
++  DIR *dir = NULL;
++  struct dirent *entry = NULL;
++  dir = opendir(target_dir);
++  if (!dir) {
++    fprintf(LOGFILE, "Could not open directory %s - %s\n", target_dir,
++            strerror(errno));
++    return 0;
++  }
++  while ((entry = readdir(dir)) != NULL) {
++    if (strcmp(entry->d_name, ".") == 0) {
++      continue;
++    }
++    if (strcmp(entry->d_name, "..") == 0) {
++      continue;
++    }
++    fprintf(LOGFILE, "Directory is not empty %s\n", target_dir);
++    return 0;
++  }
++  return 1;
++}
++
+ /**
+  * Mount a cgroup controller at the requested mount point and create
+  * a hierarchy for the Hadoop NodeManager to manage.
+@@ -1939,7 +1961,13 @@ int mount_cgroup(const char *pair, const char *hierarchy) {
+     result = -1;
+   } else {
+     if (strstr(mount_path, "..") != NULL) {
+-      fprintf(LOGFILE, "Unsupported cgroup mount path detected.\n");
++      fprintf(LOGFILE, "Unsupported cgroup mount path detected. %s\n",
++          mount_path);
++      result = INVALID_COMMAND_PROVIDED;
++      goto cleanup;
++    }
++    if (!is_empty(mount_path)) {
++      fprintf(LOGFILE, "cgroup mount path is not empty. %s\n", mount_path);
+       result = INVALID_COMMAND_PROVIDED;
+       goto cleanup;
+     }
+diff --git a/hadoop-yarn-project/hadoop-yarn/hadoop-yarn-server/hadoop-yarn-server-nodemanager/src/main/native/container-executor/test/test-container-executor.c b/hadoop-yarn-project/hadoop-yarn/hadoop-yarn-server/hadoop-yarn-server-nodemanager/src/main/native/container-executor/test/test-container-executor.c
+index 40aa8ad..a3eb4c4 100644
+--- a/hadoop-yarn-project/hadoop-yarn/hadoop-yarn-server/hadoop-yarn-server-nodemanager/src/main/native/container-executor/test/test-container-executor.c
++++ b/hadoop-yarn-project/hadoop-yarn/hadoop-yarn-server/hadoop-yarn-server-nodemanager/src/main/native/container-executor/test/test-container-executor.c
+@@ -816,6 +816,23 @@ void test_trim_function() {
+   free(trimmed);
+ }
+ 
++void test_is_empty() {
++  printf("\nTesting is_empty function\n");
++  if (is_empty("/")) {
++    printf("FAIL: / should not be empty\n");
++    exit(1);
++  }
++  if (is_empty("/tmp/2938rf2983hcqnw8ud/noexist")) {
++    printf("FAIL: /tmp/2938rf2983hcqnw8ud/noexist should not exist\n");
++    exit(1);
++  }
++  mkdir("/tmp/2938rf2983hcqnw8ud/emptydir", S_IRWXU);
++  if (!is_empty("/tmp/2938rf2983hcqnw8ud/emptydir")) {
++    printf("FAIL: /tmp/2938rf2983hcqnw8ud/emptydir be empty\n");
++    exit(1);
++  }
++}
++
+ // This test is expected to be executed either by a regular
+ // user or by root. If executed by a regular user it doesn't
+ // test all the functions that would depend on changing the
+@@ -874,6 +891,9 @@ int main(int argc, char **argv) {
+ 
+   printf("\nStarting tests\n");
+ 
++  printf("\ntest_is_empty()\n");
++  test_is_empty();
++
+   printf("\nTesting resolve_config_path()\n");
+   test_resolve_config_path();
+ 
+-- 
+1.7.9.5
+

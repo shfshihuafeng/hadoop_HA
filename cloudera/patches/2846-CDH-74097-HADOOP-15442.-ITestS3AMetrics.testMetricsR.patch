@@ -1,0 +1,49 @@
+From 240c244af378628d47cb2896122b8fbda82af364 Mon Sep 17 00:00:00 2001
+From: Steve Loughran <stevel@apache.org>
+Date: Tue, 15 May 2018 16:13:56 +0100
+Subject: [PATCH 2846/2863] [CDH-74097] HADOOP-15442.
+ ITestS3AMetrics.testMetricsRegister can't know
+ metrics source's name. Contributed by Sean
+ Mackrory.
+
+Change-Id: I27e43fce06b48c096886fa4584201f823a067390
+==C5_APPROVED_BUGFIX==
+(cherry picked from commit 9f1e4162f48092abbe081c1671f537fd90a51204)
+---
+ .../apache/hadoop/fs/s3a/S3AInstrumentation.java   |    3 ---
+ .../org/apache/hadoop/fs/s3a/ITestS3AMetrics.java  |    5 -----
+ 2 files changed, 8 deletions(-)
+
+diff --git a/hadoop-tools/hadoop-aws/src/main/java/org/apache/hadoop/fs/s3a/S3AInstrumentation.java b/hadoop-tools/hadoop-aws/src/main/java/org/apache/hadoop/fs/s3a/S3AInstrumentation.java
+index 8e85959..e5e22dc 100644
+--- a/hadoop-tools/hadoop-aws/src/main/java/org/apache/hadoop/fs/s3a/S3AInstrumentation.java
++++ b/hadoop-tools/hadoop-aws/src/main/java/org/apache/hadoop/fs/s3a/S3AInstrumentation.java
+@@ -247,9 +247,6 @@ private void registerAsMetricsSource(URI name) {
+       number = ++metricsSourceNameCounter;
+     }
+     String msName = METRICS_SOURCE_BASENAME + number;
+-    if (number > 1) {
+-      msName = msName + number;
+-    }
+     metricsSourceName = msName + "-" + name.getHost();
+     metricsSystem.register(metricsSourceName, "", this);
+   }
+diff --git a/hadoop-tools/hadoop-aws/src/test/java/org/apache/hadoop/fs/s3a/ITestS3AMetrics.java b/hadoop-tools/hadoop-aws/src/test/java/org/apache/hadoop/fs/s3a/ITestS3AMetrics.java
+index e92ce78..972c665 100644
+--- a/hadoop-tools/hadoop-aws/src/test/java/org/apache/hadoop/fs/s3a/ITestS3AMetrics.java
++++ b/hadoop-tools/hadoop-aws/src/test/java/org/apache/hadoop/fs/s3a/ITestS3AMetrics.java
+@@ -38,11 +38,6 @@ public void testMetricsRegister()
+     Path dest = path("testMetricsRegister");
+     ContractTestUtils.touch(fs, dest);
+ 
+-    String targetMetricSource = "S3AMetrics1" + "-" + fs.getBucket();
+-    assertNotNull("No metrics under test fs for " + targetMetricSource,
+-        fs.getInstrumentation().getMetricsSystem()
+-            .getSource(targetMetricSource));
+-
+     MutableCounterLong fileCreated =
+         (MutableCounterLong) fs.getInstrumentation().getRegistry()
+             .get(Statistic.FILES_CREATED.getSymbol());
+-- 
+1.7.9.5
+

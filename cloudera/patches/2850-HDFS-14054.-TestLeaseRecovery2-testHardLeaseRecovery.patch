@@ -1,0 +1,62 @@
+From 8243d43f97a3f97fbaf86cc1278c77d58e5b9473 Mon Sep 17 00:00:00 2001
+From: Inigo Goiri <inigoiri@apache.org>
+Date: Thu, 15 Nov 2018 09:29:14 -0800
+Subject: [PATCH 2850/2863] HDFS-14054. TestLeaseRecovery2:
+ testHardLeaseRecoveryAfterNameNodeRestart2 and
+ testHardLeaseRecoveryWithRenameAfterNameNodeRestart
+ are flaky. Contributed by Zsolt Venczel.
+
+Ref.: CDH-75102
+==C5_APPROVED_BUGFIX==
+
+(cherry picked from commit 993c2140ccfb4c6dfd09c0c686b85a4b58cb39a2)
+(cherry picked from commit 95f5f582601400a0cfcae706ce9a3a4c68f80cb4)
+
+Change-Id: I95e2f759506ad95d3eb089234bbf7c69bf1ef596
+---
+ .../org/apache/hadoop/hdfs/TestLeaseRecovery2.java |   21 ++++++++++----------
+ 1 file changed, 11 insertions(+), 10 deletions(-)
+
+diff --git a/hadoop-hdfs-project/hadoop-hdfs/src/test/java/org/apache/hadoop/hdfs/TestLeaseRecovery2.java b/hadoop-hdfs-project/hadoop-hdfs/src/test/java/org/apache/hadoop/hdfs/TestLeaseRecovery2.java
+index 9f38413..f73894d 100644
+--- a/hadoop-hdfs-project/hadoop-hdfs/src/test/java/org/apache/hadoop/hdfs/TestLeaseRecovery2.java
++++ b/hadoop-hdfs-project/hadoop-hdfs/src/test/java/org/apache/hadoop/hdfs/TestLeaseRecovery2.java
+@@ -562,7 +562,14 @@ public void hardLeaseRecoveryRestartHelper(boolean doRename, int size)
+     
+     // set the hard limit to be 1 second 
+     cluster.setLeasePeriod(LONG_LEASE_PERIOD, SHORT_LEASE_PERIOD);
+-    
++
++    // Normally, the in-progress edit log would be finalized by
++    // FSEditLog#endCurrentLogSegment.  For testing purposes, we
++    // disable that here.
++    FSEditLog spyLog = spy(cluster.getNameNode().getFSImage().getEditLog());
++    doNothing().when(spyLog).endCurrentLogSegment(Mockito.anyBoolean());
++    DFSTestUtil.setEditLogForTesting(cluster.getNamesystem(), spyLog);
++
+     // Make sure lease recovery begins.
+     final String path = fileStr;
+     GenericTestUtils.waitFor(new Supplier<Boolean>() {
+@@ -570,16 +577,10 @@ public void hardLeaseRecoveryRestartHelper(boolean doRename, int size)
+       public Boolean get() {
+         String holder =
+             NameNodeAdapter.getLeaseHolderForPath(cluster.getNameNode(), path);
+-        return holder.startsWith(HdfsServerConstants.NAMENODE_LEASE_HOLDER);
++        return holder!=null && holder
++            .startsWith(HdfsServerConstants.NAMENODE_LEASE_HOLDER);
+       }
+-    }, (int)SHORT_LEASE_PERIOD, (int)SHORT_LEASE_PERIOD * 10);
+-
+-    // Normally, the in-progress edit log would be finalized by
+-    // FSEditLog#endCurrentLogSegment.  For testing purposes, we
+-    // disable that here.
+-    FSEditLog spyLog = spy(cluster.getNameNode().getFSImage().getEditLog());
+-    doNothing().when(spyLog).endCurrentLogSegment(Mockito.anyBoolean());
+-    DFSTestUtil.setEditLogForTesting(cluster.getNamesystem(), spyLog);
++    }, (int)SHORT_LEASE_PERIOD, (int)SHORT_LEASE_PERIOD * 20);
+ 
+     cluster.restartNameNode(false);
+     
+-- 
+1.7.9.5
+

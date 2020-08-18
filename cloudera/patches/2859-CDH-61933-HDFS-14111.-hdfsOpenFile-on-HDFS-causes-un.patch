@@ -1,0 +1,126 @@
+From 8927fe290329ff2fc7fe2dd73560630d562e0350 Mon Sep 17 00:00:00 2001
+From: Sahil Takiar <stakiar@apache.org>
+Date: Wed, 6 Mar 2019 15:04:06 -0800
+Subject: [PATCH 2859/2863] CDH-61933: HDFS-14111. hdfsOpenFile on HDFS causes
+ unnecessary IO from file offset 0. Contributed by
+ Sahil Takiar.
+
+==C5_APPROVED_BUGFIX==
+
+(cherry picked from commit 889ad4e2bb293e2f1401f731c5f9ffe91a442ff1)
+(cherry picked from commit b6f19383c0af9a6f36189206a105f5ef10173990)
+(cherry picked from commit 618e009ac0ab14b24c0c19153778173ee3142292)
+
+Signed-off-by: Wei-Chiu Chuang <weichiu@apache.org>
+
+Conflicts:
+	hadoop-hdfs-project/hadoop-hdfs-client/src/main/java/org/apache/hadoop/hdfs/DFSInputStream.java
+	hadoop-hdfs-project/hadoop-hdfs-native-client/src/main/native/libhdfs/hdfs.c
+
+Change-Id: Id922600052273de8021a63862eaee5498e927680
+---
+ .../apache/hadoop/crypto/CryptoInputStream.java    |    1 +
+ .../org/apache/hadoop/fs/StreamCapabilities.java   |    6 ++++
+ .../org/apache/hadoop/hdfs/DFSInputStream.java     |    1 +
+ .../hadoop-hdfs/src/main/native/libhdfs/hdfs.c     |   29 ++++++++++++--------
+ 4 files changed, 26 insertions(+), 11 deletions(-)
+
+diff --git a/hadoop-common-project/hadoop-common/src/main/java/org/apache/hadoop/crypto/CryptoInputStream.java b/hadoop-common-project/hadoop-common/src/main/java/org/apache/hadoop/crypto/CryptoInputStream.java
+index a2273bf..ed33c6a 100644
+--- a/hadoop-common-project/hadoop-common/src/main/java/org/apache/hadoop/crypto/CryptoInputStream.java
++++ b/hadoop-common-project/hadoop-common/src/main/java/org/apache/hadoop/crypto/CryptoInputStream.java
+@@ -740,6 +740,7 @@ public boolean hasCapability(String capability) {
+     case StreamCapabilities.READAHEAD:
+     case StreamCapabilities.DROPBEHIND:
+     case StreamCapabilities.UNBUFFER:
++    case StreamCapabilities.READBYTEBUFFER:
+       return true;
+     default:
+       return false;
+diff --git a/hadoop-common-project/hadoop-common/src/main/java/org/apache/hadoop/fs/StreamCapabilities.java b/hadoop-common-project/hadoop-common/src/main/java/org/apache/hadoop/fs/StreamCapabilities.java
+index 3549cdc..c52d307 100644
+--- a/hadoop-common-project/hadoop-common/src/main/java/org/apache/hadoop/fs/StreamCapabilities.java
++++ b/hadoop-common-project/hadoop-common/src/main/java/org/apache/hadoop/fs/StreamCapabilities.java
+@@ -60,6 +60,12 @@
+   String UNBUFFER = "in:unbuffer";
+ 
+   /**
++   * Stream read(ByteBuffer) capability implemented by
++   * {@link ByteBufferReadable#read(java.nio.ByteBuffer)}.
++   */
++  String READBYTEBUFFER = "in:readbytebuffer";
++
++  /**
+    * Capabilities that a stream can support and be queried for.
+    */
+   @Deprecated
+diff --git a/hadoop-hdfs-project/hadoop-hdfs/src/main/java/org/apache/hadoop/hdfs/DFSInputStream.java b/hadoop-hdfs-project/hadoop-hdfs/src/main/java/org/apache/hadoop/hdfs/DFSInputStream.java
+index a03889a..6cb212f 100644
+--- a/hadoop-hdfs-project/hadoop-hdfs/src/main/java/org/apache/hadoop/hdfs/DFSInputStream.java
++++ b/hadoop-hdfs-project/hadoop-hdfs/src/main/java/org/apache/hadoop/hdfs/DFSInputStream.java
+@@ -1961,6 +1961,7 @@ public boolean hasCapability(String capability) {
+     case StreamCapabilities.READAHEAD:
+     case StreamCapabilities.DROPBEHIND:
+     case StreamCapabilities.UNBUFFER:
++    case StreamCapabilities.READBYTEBUFFER:
+       return true;
+     default:
+       return false;
+diff --git a/hadoop-hdfs-project/hadoop-hdfs/src/main/native/libhdfs/hdfs.c b/hadoop-hdfs-project/hadoop-hdfs/src/main/native/libhdfs/hdfs.c
+index 586375c..202e64c 100644
+--- a/hadoop-hdfs-project/hadoop-hdfs/src/main/native/libhdfs/hdfs.c
++++ b/hadoop-hdfs-project/hadoop-hdfs/src/main/native/libhdfs/hdfs.c
+@@ -1013,7 +1013,7 @@ static hdfsFile hdfsOpenFileImpl(hdfsFS fs, const char *path, int flags,
+        return f{is|os};
+     */
+     int accmode = flags & O_ACCMODE;
+-    jstring jStrBufferSize = NULL, jStrReplication = NULL;
++    jstring jStrBufferSize = NULL, jStrReplication = NULL, jCapabilityString = NULL;
+     jobject jConfiguration = NULL, jPath = NULL, jFile = NULL;
+     jobject jFS = (jobject)fs;
+     jthrowable jthr;
+@@ -1171,16 +1171,22 @@ static hdfsFile hdfsOpenFileImpl(hdfsFS fs, const char *path, int flags,
+     file->flags = 0;
+ 
+     if ((flags & O_WRONLY) == 0) {
+-        // Try a test read to see if we can do direct reads
+-        char buf;
+-        if (readDirect(fs, file, &buf, 0) == 0) {
+-            // Success - 0-byte read should return 0
++        // Check the StreamCapabilities of jFile to see if we can do direct reads
++        jthr = newJavaStr(env, "in:readbytebuffer", &jCapabilityString);
++        if (jthr) {
++            ret = printExceptionAndFree(env, jthr, PRINT_EXC_ALL,
++                                        "hdfsOpenFile(%s): newJavaStr", path);
++            goto done;
++        }
++        jthr = invokeMethod(env, &jVal, INSTANCE, jFile, HADOOP_ISTRM,
++                            "hasCapability", "(Ljava/lang/String;)Z", jCapabilityString);
++        if (jthr) {
++            ret = printExceptionAndFree(env, jthr, PRINT_EXC_ALL,
++                                        "hdfsOpenFile(%s): FSDataInputStream#hasCapability", path);
++            goto done;
++        }
++        if (jVal.z) {
+             file->flags |= HDFS_FILE_SUPPORTS_DIRECT_READ;
+-        } else if (errno != ENOTSUP) {
+-            // Unexpected error. Clear it, don't set the direct flag.
+-            fprintf(stderr,
+-                  "hdfsOpenFile(%s): WARN: Unexpected error %d when testing "
+-                  "for direct read compatibility\n", path, errno);
+         }
+     }
+     ret = 0;
+@@ -1190,7 +1196,8 @@ done:
+     destroyLocalReference(env, jStrReplication);
+     destroyLocalReference(env, jConfiguration); 
+     destroyLocalReference(env, jPath); 
+-    destroyLocalReference(env, jFile); 
++    destroyLocalReference(env, jFile);
++    destroyLocalReference(env, jCapabilityString);
+     if (ret) {
+         if (file) {
+             if (file->file) {
+-- 
+1.7.9.5
+

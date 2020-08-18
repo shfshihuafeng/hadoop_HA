@@ -1,0 +1,278 @@
+From 60b7e6469dfc4a2136e3aad25b0d3950a20bda44 Mon Sep 17 00:00:00 2001
+From: Robert Kanter <rkanter@apache.org>
+Date: Thu, 7 Jun 2018 17:09:34 -0700
+Subject: [PATCH 2861/2863] CDH-71625,Disable mounting cgroups by default
+ (miklos.szegedi@cloudera.com via rkanter)
+
+(cherry picked from commit 351cf87c92872d90f62c476f85ae4d02e485769c)
+(cherry picked from commit d61d84279f7f22867c23dd95e8bfeb70ea7e0690)
+(cherry picked from commit f5fd5aa025c904e9a2ff8c5fd932aaed2363a6a0)
+(cherry picked from commit e20a840174bc2b27fcc0935e0086977bd6fbfcb3)
+
+==C5_APPROVED_BUGFIX==
+
+Conflicts:
+	hadoop-yarn-project/hadoop-yarn/hadoop-yarn-server/hadoop-yarn-server-nodemanager/src/main/native/container-executor/impl/container-executor.c
+	hadoop-yarn-project/hadoop-yarn/hadoop-yarn-server/hadoop-yarn-server-nodemanager/src/main/native/container-executor/impl/container-executor.h
+	hadoop-yarn-project/hadoop-yarn/hadoop-yarn-site/src/site/markdown/NodeManagerCgroups.md
+(cherry picked from commit 883f082efe206446e6ded58502d1006a0aebb237)
+
+Change-Id: I5c60ff0b7631caaf6a3f3e8e0a4f732a675b5a7e
+(cherry picked from commit eb317af1e722d65761a791b2da3e862de81399e7)
+---
+ .../container-executor/impl/container-executor.c   |   57 ++++++++++++++---
+ .../container-executor/impl/container-executor.h   |    3 +
+ .../src/main/native/container-executor/impl/main.c |   19 ++++--
+ .../src/site/markdown/NodeManagerCgroups.md        |   67 ++++++++++++++++++++
+ 4 files changed, 129 insertions(+), 17 deletions(-)
+ create mode 100644 hadoop-yarn-project/hadoop-yarn/hadoop-yarn-site/src/site/markdown/NodeManagerCgroups.md
+
+diff --git a/hadoop-yarn-project/hadoop-yarn/hadoop-yarn-server/hadoop-yarn-server-nodemanager/src/main/native/container-executor/impl/container-executor.c b/hadoop-yarn-project/hadoop-yarn/hadoop-yarn-server/hadoop-yarn-server-nodemanager/src/main/native/container-executor/impl/container-executor.c
+index 57d0ed3..96e3c53 100644
+--- a/hadoop-yarn-project/hadoop-yarn/hadoop-yarn-server/hadoop-yarn-server-nodemanager/src/main/native/container-executor/impl/container-executor.c
++++ b/hadoop-yarn-project/hadoop-yarn/hadoop-yarn-server/hadoop-yarn-server-nodemanager/src/main/native/container-executor/impl/container-executor.c
+@@ -41,6 +41,8 @@ static const int DEFAULT_MIN_USERID = 1000;
+ 
+ static const char* DEFAULT_BANNED_USERS[] = {"mapred", "hdfs", "bin", 0};
+ 
++static const int DEFAULT_MOUNT_CGROUP_SUPPORT_ENABLED = 0;
++
+ //location of traffic control binary
+ static const char* TC_BIN = "/sbin/tc";
+ static const char* TC_MODIFY_STATE_OPTS [] = { "-b" , NULL};
+@@ -1073,6 +1075,12 @@ int is_tc_support_enabled() {
+     return is_feature_enabled(TC_SUPPORT_ENABLED_KEY,
+     DEFAULT_TC_SUPPORT_ENABLED);
+ }
++
++int is_mount_cgroups_support_enabled() {
++    return is_feature_enabled(MOUNT_CGROUP_SUPPORT_ENABLED_KEY,
++                              DEFAULT_MOUNT_CGROUP_SUPPORT_ENABLED);
++}
++
+ /**
+  * Function to prepare the application directories for the container.
+  */
+@@ -1871,20 +1879,25 @@ void chown_dir_contents(const char *dir_path, uid_t uid, gid_t gid) {
+   DIR *dp;
+   struct dirent *ep;
+ 
+-  char *path_tmp = malloc(strlen(dir_path) + NAME_MAX + 2);
++  size_t len = strlen(dir_path) + NAME_MAX + 2;
++  char *path_tmp = malloc(len);
+   if (path_tmp == NULL) {
+     return;
+   }
+ 
+-  char *buf = stpncpy(path_tmp, dir_path, strlen(dir_path));
+-  *buf++ = '/';
+-
+   dp = opendir(dir_path);
+   if (dp != NULL) {
+     while ((ep = readdir(dp)) != NULL) {
+-      stpncpy(buf, ep->d_name, strlen(ep->d_name));
+-      buf[strlen(ep->d_name)] = '\0';
+-      change_owner(path_tmp, uid, gid);
++      if (strcmp(ep->d_name, ".") != 0 &&
++          strcmp(ep->d_name, "..") != 0 &&
++          strstr(ep->d_name, "..") == NULL) {
++        int result = snprintf(path_tmp, len, "%s/%s", dir_path, ep->d_name);
++        if (result > 0 && result < len) {
++          change_owner(path_tmp, uid, gid);
++        } else {
++          fprintf(LOGFILE, "Ignored %s/%s due to length", dir_path, ep->d_name);
++        }
++      }
+     }
+     closedir(dp);
+   }
+@@ -1907,13 +1920,29 @@ int mount_cgroup(const char *pair, const char *hierarchy) {
+   char *mount_path = malloc(strlen(pair));
+   char hier_path[EXECUTOR_PATH_MAX];
+   int result = 0;
++  size_t len = strlen(pair);
+ 
+-  if (get_kv_key(pair, controller, strlen(pair)) < 0 ||
+-      get_kv_value(pair, mount_path, strlen(pair)) < 0) {
++  if (controller == NULL || mount_path == NULL) {
++    fprintf(LOGFILE, "Failed to mount cgroup controller; not enough memory\n");
++    result = OUT_OF_MEMORY;
++    goto cleanup;
++  }
++  if (hierarchy == NULL || strstr(hierarchy, "..") != NULL) {
++    fprintf(LOGFILE, "Unsupported cgroup hierarhy path detected.\n");
++    result = INVALID_COMMAND_PROVIDED;
++    goto cleanup;
++  }
++  if (get_kv_key(pair, controller, len) < 0 ||
++      get_kv_value(pair, mount_path, len) < 0) {
+     fprintf(LOGFILE, "Failed to mount cgroup controller; invalid option: %s\n",
+               pair);
+     result = -1;
+   } else {
++    if (strstr(mount_path, "..") != NULL) {
++      fprintf(LOGFILE, "Unsupported cgroup mount path detected.\n");
++      result = INVALID_COMMAND_PROVIDED;
++      goto cleanup;
++    }
+     if (mount("none", mount_path, "cgroup", 0, controller) == 0) {
+       char *buf = stpncpy(hier_path, mount_path, strlen(mount_path));
+       *buf++ = '/';
+@@ -1921,13 +1950,20 @@ int mount_cgroup(const char *pair, const char *hierarchy) {
+ 
+       // create hierarchy as 0750 and chown to Hadoop NM user
+       const mode_t perms = S_IRWXU | S_IRGRP | S_IXGRP;
++      struct stat sb;
++      if (stat(hier_path, &sb) == 0 &&
++          (sb.st_uid != nm_uid || sb.st_gid != nm_gid)) {
++        fprintf(LOGFILE, "cgroup hierarchy %s already owned by another user %d\n", hier_path, sb.st_uid);
++        result = INVALID_COMMAND_PROVIDED;
++        goto cleanup;
++      }
+       if (mkdirs(hier_path, perms) == 0) {
+         change_owner(hier_path, nm_uid, nm_gid);
+         chown_dir_contents(hier_path, nm_uid, nm_gid);
+       }
+     } else {
+       fprintf(LOGFILE, "Failed to mount cgroup controller %s at %s - %s\n",
+-                controller, mount_path, strerror(errno));
++              controller, mount_path, strerror(errno));
+       // if controller is already mounted, don't stop trying to mount others
+       if (errno != EBUSY) {
+         result = -1;
+@@ -1935,6 +1971,7 @@ int mount_cgroup(const char *pair, const char *hierarchy) {
+     }
+   }
+ 
++cleanup:
+   free(controller);
+   free(mount_path);
+ 
+diff --git a/hadoop-yarn-project/hadoop-yarn/hadoop-yarn-server/hadoop-yarn-server-nodemanager/src/main/native/container-executor/impl/container-executor.h b/hadoop-yarn-project/hadoop-yarn/hadoop-yarn-server/hadoop-yarn-server-nodemanager/src/main/native/container-executor/impl/container-executor.h
+index 437070b..16230ab 100644
+--- a/hadoop-yarn-project/hadoop-yarn/hadoop-yarn-server/hadoop-yarn-server-nodemanager/src/main/native/container-executor/impl/container-executor.h
++++ b/hadoop-yarn-project/hadoop-yarn/hadoop-yarn-server/hadoop-yarn-server-nodemanager/src/main/native/container-executor/impl/container-executor.h
+@@ -90,6 +90,7 @@ enum operations {
+ #define DOCKER_BINARY_KEY "docker.binary"
+ #define DOCKER_SUPPORT_ENABLED_KEY "feature.docker.enabled"
+ #define TC_SUPPORT_ENABLED_KEY "feature.tc.enabled"
++#define MOUNT_CGROUP_SUPPORT_ENABLED_KEY "feature.mount-cgroup.enabled"
+ #define TMP_DIR "tmp"
+ 
+ extern struct passwd *user_detail;
+@@ -266,6 +267,8 @@ int is_tc_support_enabled();
+ 
+ /** Check if docker support is enabled in configuration. */
+ int is_docker_support_enabled();
++/** Check if cgroup mount support is enabled in configuration. */
++int is_mount_cgroups_support_enabled();
+ 
+ /**
+  * Run a batch of tc commands that modify interface configuration
+diff --git a/hadoop-yarn-project/hadoop-yarn/hadoop-yarn-server/hadoop-yarn-server-nodemanager/src/main/native/container-executor/impl/main.c b/hadoop-yarn-project/hadoop-yarn/hadoop-yarn-server/hadoop-yarn-server-nodemanager/src/main/native/container-executor/impl/main.c
+index deb5a92..db9effe 100644
+--- a/hadoop-yarn-project/hadoop-yarn/hadoop-yarn-server/hadoop-yarn-server-nodemanager/src/main/native/container-executor/impl/main.c
++++ b/hadoop-yarn-project/hadoop-yarn/hadoop-yarn-server/hadoop-yarn-server-nodemanager/src/main/native/container-executor/impl/main.c
+@@ -264,14 +264,19 @@ static int validate_arguments(int argc, char **argv , int *operation) {
+   }
+ 
+   if (strcmp("--mount-cgroups", argv[1]) == 0) {
+-    if (argc < 4) {
+-      display_usage(stdout);
+-      return INVALID_ARGUMENT_NUMBER;
++    if (is_mount_cgroups_support_enabled()) {
++      if (argc < 4) {
++        display_usage(stdout);
++        return INVALID_ARGUMENT_NUMBER;
++      }
++      optind++;
++      cmd_input.cgroups_hierarchy = argv[optind++];
++      *operation = MOUNT_CGROUPS;
++      return 0;
++    } else {
++      display_feature_disabled_message("mount cgroup");
++      return FEATURE_DISABLED;
+     }
+-    optind++;
+-    cmd_input.cgroups_hierarchy = argv[optind++];
+-    *operation = MOUNT_CGROUPS;
+-    return 0;
+   }
+ 
+   if (strcmp("--tc-modify-state", argv[1]) == 0) {
+diff --git a/hadoop-yarn-project/hadoop-yarn/hadoop-yarn-site/src/site/markdown/NodeManagerCgroups.md b/hadoop-yarn-project/hadoop-yarn/hadoop-yarn-site/src/site/markdown/NodeManagerCgroups.md
+new file mode 100644
+index 0000000..5014a95
+--- /dev/null
++++ b/hadoop-yarn-project/hadoop-yarn/hadoop-yarn-site/src/site/markdown/NodeManagerCgroups.md
+@@ -0,0 +1,67 @@
++<!---
++  Licensed under the Apache License, Version 2.0 (the "License");
++  you may not use this file except in compliance with the License.
++  You may obtain a copy of the License at
++
++   http://www.apache.org/licenses/LICENSE-2.0
++
++  Unless required by applicable law or agreed to in writing, software
++  distributed under the License is distributed on an "AS IS" BASIS,
++  WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
++  See the License for the specific language governing permissions and
++  limitations under the License. See accompanying LICENSE file.
++-->
++
++Using CGroups with YARN
++=======================
++
++* [CGroups Configuration](#CGroups_configuration)
++* [CGroups and Security](#CGroups_and_security)
++
++CGroups is a mechanism for aggregating/partitioning sets of tasks, and all their future children, into hierarchical groups with specialized behaviour. CGroups is a Linux kernel feature and was merged into kernel version 2.6.24. From a YARN perspective, this allows containers to be limited in their resource usage. A good example of this is CPU usage. Without CGroups, it becomes hard to limit container CPU usage. Currently, CGroups is only used for limiting CPU usage.
++
++CGroups Configuration
++---------------------
++
++This section describes the configuration variables for using CGroups.
++
++The following settings are related to setting up CGroups. These need to be set in *yarn-site.xml*.
++
++|Configuration Name | Description |
++|:---- |:---- |
++| `yarn.nodemanager.container-executor.class` | This should be set to "org.apache.hadoop.yarn.server.nodemanager.LinuxContainerExecutor". CGroups is a Linux kernel feature and is exposed via the LinuxContainerExecutor. |
++| `yarn.nodemanager.linux-container-executor.resources-handler.class` | This should be set to "org.apache.hadoop.yarn.server.nodemanager.util.CgroupsLCEResourcesHandler". Using the LinuxContainerExecutor doesn't force you to use CGroups. If you wish to use CGroups, the resource-handler-class must be set to CGroupsLCEResourceHandler. |
++| `yarn.nodemanager.linux-container-executor.cgroups.hierarchy` | The cgroups hierarchy under which to place YARN proccesses(cannot contain commas). If yarn.nodemanager.linux-container-executor.cgroups.mount is false (that is, if cgroups have been pre-configured), then this cgroups hierarchy must already exist |
++| `yarn.nodemanager.linux-container-executor.cgroups.mount` | Whether the LCE should attempt to mount cgroups if not found - can be true or false. |
++| `yarn.nodemanager.linux-container-executor.cgroups.mount-path` | Where the LCE should attempt to mount cgroups if not found. Common locations include /sys/fs/cgroup and /cgroup; the default location can vary depending on the Linux distribution in use. This path must exist before the NodeManager is launched. Only used when the LCE resources handler is set to the CgroupsLCEResourcesHandler, and yarn.nodemanager.linux-container-executor.cgroups.mount is true. A point to note here is that the container-executor binary will try to mount the path specified + "/" + the subsystem. In our case, since we are trying to limit CPU the binary tries to mount the path specified + "/cpu" and that's the path it expects to exist. |
++| `yarn.nodemanager.linux-container-executor.group` | The Unix group of the NodeManager. It should match the setting in "container-executor.cfg". This configuration is required for validating the secure access of the container-executor binary. |
++
++The following settings are related to limiting resource usage of YARN containers:
++
++|Configuration Name | Description |
++|:---- |:---- |
++| `yarn.nodemanager.resource.percentage-physical-cpu-limit` | This setting lets you limit the cpu usage of all YARN containers. It sets a hard upper limit on the cumulative CPU usage of the containers. For example, if set to 60, the combined CPU usage of all YARN containers will not exceed 60%. |
++| `yarn.nodemanager.linux-container-executor.cgroups.strict-resource-usage` | CGroups allows cpu usage limits to be hard or soft. When this setting is true, containers cannot use more CPU usage than allocated even if spare CPU is available. This ensures that containers can only use CPU that they were allocated. When set to false, containers can use spare CPU if available. It should be noted that irrespective of whether set to true or false, at no time can the combined CPU usage of all containers exceed the value specified in "yarn.nodemanager.resource.percentage-physical-cpu-limit". |
++
++CGroups mount options
++---------------------
++
++YARN uses CGroups through a directory structure mounted into the file system by the kernel. There are three options to attach to CGroups.
++
++| Option | Description |
++|:---- |:---- |
++| Discover CGroups mounted already | This should be used on newer systems like RHEL7 or Ubuntu16 or if the administrator mounts CGroups before YARN starts. Set `yarn.nodemanager.linux-container-executor.cgroups.mount` to false and leave other settings set to their defaults. YARN will locate the mount points in `/proc/mounts`. Common locations include `/sys/fs/cgroup` and `/cgroup`. The default location can vary depending on the Linux distribution in use.|
++| CGroups mounted by YARN | IMPORTANT: This option is deprecated due to security reasons with the `container-executor.cfg` option `feature.mount-cgroup.enabled=0` by default. Please mount cgroups before launching YARN.|
++
++CGroups and security
++--------------------
++
++CGroups itself has no requirements related to security. However, the LinuxContainerExecutor does have some requirements. If running in non-secure mode, by default, the LCE runs all jobs as user "nobody". This user can be changed by setting "yarn.nodemanager.linux-container-executor.nonsecure-mode.local-user" to the desired user. However, it can also be configured to run jobs as the user submitting the job. In that case "yarn.nodemanager.linux-container-executor.nonsecure-mode.limit-users" should be set to false.
++
++| yarn.nodemanager.linux-container-executor.nonsecure-mode.local-user | yarn.nodemanager.linux-container-executor.nonsecure-mode.limit-users | User running jobs |
++|:---- |:---- |:---- |
++| (default) | (default) | nobody |
++| yarn | (default) | yarn |
++| yarn | false | (User submitting the job) |
++
++
+-- 
+1.7.9.5
+

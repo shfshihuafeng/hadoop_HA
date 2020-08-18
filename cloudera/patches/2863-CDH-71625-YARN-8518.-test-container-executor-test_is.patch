@@ -1,0 +1,57 @@
+From 4f94d60caa4cbb9af0709a2fd96dc3861af9cf20 Mon Sep 17 00:00:00 2001
+From: Robert Kanter <rkanter@apache.org>
+Date: Thu, 12 Jul 2018 16:38:46 -0700
+Subject: [PATCH 2863/2863] CDH-71625,YARN-8518. test-container-executor
+ test_is_empty() is broken (Jim_Brennan via
+ rkanter)
+
+(cherry picked from commit 1bc106a738a6ce4f7ed025d556bb44c1ede022e3)
+(cherry picked from commit 6e0db6fe1a8ce50977175567f2ba1f957e7b9c91)
+(cherry picked from commit edb9d8b55419dabf5b8ace678e5ddb5cd559972b)
+(cherry picked from commit d9b9c9125815b20ef63ba65c4c2394c89345be9c)
+(cherry picked from commit 2a6b6265501adfeb54d8e8485e00fee7f12f0b65)
+
+==C5_APPROVED_BUGFIX==
+
+Change-Id: Ia887c18884499429b17615a61c81510b18413c25
+(cherry picked from commit 703b1b4ff6629dba971e66228f1aa1e464774ebc)
+---
+ .../test/test-container-executor.c                 |   14 +++++++++-----
+ 1 file changed, 9 insertions(+), 5 deletions(-)
+
+diff --git a/hadoop-yarn-project/hadoop-yarn/hadoop-yarn-server/hadoop-yarn-server-nodemanager/src/main/native/container-executor/test/test-container-executor.c b/hadoop-yarn-project/hadoop-yarn/hadoop-yarn-server/hadoop-yarn-server-nodemanager/src/main/native/container-executor/test/test-container-executor.c
+index a3eb4c4..83c99db 100644
+--- a/hadoop-yarn-project/hadoop-yarn/hadoop-yarn-server/hadoop-yarn-server-nodemanager/src/main/native/container-executor/test/test-container-executor.c
++++ b/hadoop-yarn-project/hadoop-yarn/hadoop-yarn-server/hadoop-yarn-server-nodemanager/src/main/native/container-executor/test/test-container-executor.c
+@@ -816,19 +816,23 @@ void test_trim_function() {
+   free(trimmed);
+ }
+ 
++int is_empty(char *name);
++
+ void test_is_empty() {
+   printf("\nTesting is_empty function\n");
+   if (is_empty("/")) {
+     printf("FAIL: / should not be empty\n");
+     exit(1);
+   }
+-  if (is_empty("/tmp/2938rf2983hcqnw8ud/noexist")) {
+-    printf("FAIL: /tmp/2938rf2983hcqnw8ud/noexist should not exist\n");
++  char *noexist = TEST_ROOT "/noexist";
++  if (is_empty(noexist)) {
++    printf("%s should not exist\n", noexist);
+     exit(1);
+   }
+-  mkdir("/tmp/2938rf2983hcqnw8ud/emptydir", S_IRWXU);
+-  if (!is_empty("/tmp/2938rf2983hcqnw8ud/emptydir")) {
+-    printf("FAIL: /tmp/2938rf2983hcqnw8ud/emptydir be empty\n");
++  char *emptydir = TEST_ROOT "/emptydir";
++  mkdir(emptydir, S_IRWXU);
++  if (!is_empty(emptydir)) {
++    printf("FAIL: %s should be empty\n", emptydir);
+     exit(1);
+   }
+ }
+-- 
+1.7.9.5
+

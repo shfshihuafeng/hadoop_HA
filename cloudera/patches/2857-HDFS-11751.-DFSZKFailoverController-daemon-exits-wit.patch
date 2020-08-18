@@ -1,0 +1,52 @@
+From 08059692ca52b91fec1fef047e879caa0ba61913 Mon Sep 17 00:00:00 2001
+From: Brahma Reddy Battula <brahma@apache.org>
+Date: Tue, 5 Dec 2017 19:53:46 +0530
+Subject: [PATCH 2857/2863] HDFS-11751. DFSZKFailoverController daemon exits
+ with wrong status code. Contributed by Bharat
+ Viswanadham
+
+==C5_APPROVED_BUGFIX==
+
+Ref.: CDH-77539
+
+(cherry picked from commit 6d16a99ae8821c13eec90132e2c63a96fce4b08a)
+(cherry picked from commit ceb4043ae17151fa61900d4de471f7ac12e6fcfc)
+
+Change-Id: I77b61bb5138d9c7f31d2131216a04787c58fbe83
+(cherry picked from commit 0e81a7ed85bd7c7026ca237d3398b8de6a3db2fd)
+---
+ .../hadoop/hdfs/tools/DFSZKFailoverController.java |    6 +++---
+ 1 file changed, 3 insertions(+), 3 deletions(-)
+
+diff --git a/hadoop-hdfs-project/hadoop-hdfs/src/main/java/org/apache/hadoop/hdfs/tools/DFSZKFailoverController.java b/hadoop-hdfs-project/hadoop-hdfs/src/main/java/org/apache/hadoop/hdfs/tools/DFSZKFailoverController.java
+index 5ea3977..88bf2a0 100644
+--- a/hadoop-hdfs-project/hadoop-hdfs/src/main/java/org/apache/hadoop/hdfs/tools/DFSZKFailoverController.java
++++ b/hadoop-hdfs-project/hadoop-hdfs/src/main/java/org/apache/hadoop/hdfs/tools/DFSZKFailoverController.java
+@@ -19,6 +19,7 @@
+ 
+ import static org.apache.hadoop.hdfs.DFSConfigKeys.DFS_NAMENODE_KEYTAB_FILE_KEY;
+ import static org.apache.hadoop.hdfs.DFSConfigKeys.DFS_NAMENODE_KERBEROS_PRINCIPAL_KEY;
++import static org.apache.hadoop.util.ExitUtil.terminate;
+ 
+ import java.io.ByteArrayOutputStream;
+ import java.io.IOException;
+@@ -187,14 +188,13 @@ public static void main(String args[])
+         new HdfsConfiguration(), args);
+     DFSZKFailoverController zkfc = DFSZKFailoverController.create(
+         parser.getConfiguration());
+-    int retCode = 0;
+     try {
+-      retCode = zkfc.run(parser.getRemainingArgs());
++      System.exit(zkfc.run(parser.getRemainingArgs()));
+     } catch (Throwable t) {
+       LOG.fatal("DFSZKFailOverController exiting due to earlier exception "
+           + t);
++      terminate(1, t);
+     }
+-    System.exit(retCode);
+   }
+ 
+   @Override
+-- 
+1.7.9.5
+

@@ -1,0 +1,32 @@
+From e1af33fbabfd18edb614deaa19f87e61b2200a76 Mon Sep 17 00:00:00 2001
+From: Wangda Tan <wangda@apache.org>
+Date: Mon, 24 Sep 2018 13:30:02 -0700
+Subject: [PATCH 2855/2863] MAPREDUCE-7125. JobResourceUploader creates
+ LocalFileSystem when it's not necessary. (Peter
+ Cseh via wangda)
+
+==C5_APPROVED_BUGFIX==
+
+Change-Id: I1aa720ed03739f6f4abeec46f6068e2ab332987a
+(cherry picked from commit 230d90c5b9cc0d6e74bf16b1cf6685a163a24d48)
+---
+ .../hadoop/mapreduce/JobResourceUploader.java      |    2 +-
+ 1 file changed, 1 insertion(+), 1 deletion(-)
+
+diff --git a/hadoop-mapreduce-project/hadoop-mapreduce-client/hadoop-mapreduce-client-core/src/main/java/org/apache/hadoop/mapreduce/JobResourceUploader.java b/hadoop-mapreduce-project/hadoop-mapreduce-client/hadoop-mapreduce-client-core/src/main/java/org/apache/hadoop/mapreduce/JobResourceUploader.java
+index f3e4d2f..25b69d1 100644
+--- a/hadoop-mapreduce-project/hadoop-mapreduce-client/hadoop-mapreduce-client-core/src/main/java/org/apache/hadoop/mapreduce/JobResourceUploader.java
++++ b/hadoop-mapreduce-project/hadoop-mapreduce-client/hadoop-mapreduce-client-core/src/main/java/org/apache/hadoop/mapreduce/JobResourceUploader.java
+@@ -300,8 +300,8 @@ private String validateFilePath(String file, Configuration conf)
+       throw new IllegalArgumentException(e);
+     }
+     Path path = new Path(pathURI);
+-    FileSystem localFs = FileSystem.getLocal(conf);
+     if (pathURI.getScheme() == null) {
++      FileSystem localFs = FileSystem.getLocal(conf);
+       // default to the local file system
+       // check if the file exists or not first
+       if (!localFs.exists(path)) {
+-- 
+1.7.9.5
+

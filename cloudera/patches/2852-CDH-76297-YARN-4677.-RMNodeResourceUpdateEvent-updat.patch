@@ -1,0 +1,384 @@
+From f529d0eb5702dda43fa109187185fb716c36e09b Mon Sep 17 00:00:00 2001
+From: Robert Kanter <rkanter@apache.org>
+Date: Mon, 4 Jun 2018 15:59:27 -0700
+Subject: [PATCH 2852/2863] CDH-76297,YARN-4677. RMNodeResourceUpdateEvent
+ update from scheduler can lead to race condition
+ (wilfreds and gphillips via rkanter)
+
+(cherry picked from commit f97bd6bb7f7b4e7a99a572d9d9f9232702ea8318)
+
+Change-Id: Icf2114686f1e229a001d02dd71ff3210c66c3ae9
+---
+ .../scheduler/capacity/CapacityScheduler.java      |   16 +++---
+ .../scheduler/fair/FairScheduler.java              |    9 ++--
+ .../scheduler/fifo/FifoScheduler.java              |    9 ++--
+ .../scheduler/capacity/TestCapacityScheduler.java  |   43 +++++++++++----
+ .../scheduler/fair/TestFairScheduler.java          |   43 +++++++++++----
+ .../scheduler/fifo/TestFifoScheduler.java          |   55 +++++++++++++-------
+ 6 files changed, 122 insertions(+), 53 deletions(-)
+
+diff --git a/hadoop-yarn-project/hadoop-yarn/hadoop-yarn-server/hadoop-yarn-server-resourcemanager/src/main/java/org/apache/hadoop/yarn/server/resourcemanager/scheduler/capacity/CapacityScheduler.java b/hadoop-yarn-project/hadoop-yarn/hadoop-yarn-server/hadoop-yarn-server-resourcemanager/src/main/java/org/apache/hadoop/yarn/server/resourcemanager/scheduler/capacity/CapacityScheduler.java
+index 383e412..8a4e397 100644
+--- a/hadoop-yarn-project/hadoop-yarn/hadoop-yarn-server/hadoop-yarn-server-resourcemanager/src/main/java/org/apache/hadoop/yarn/server/resourcemanager/scheduler/capacity/CapacityScheduler.java
++++ b/hadoop-yarn-project/hadoop-yarn/hadoop-yarn-server/hadoop-yarn-server-resourcemanager/src/main/java/org/apache/hadoop/yarn/server/resourcemanager/scheduler/capacity/CapacityScheduler.java
+@@ -992,19 +992,20 @@ private synchronized void nodeUpdate(RMNode nm) {
+     // schedule.
+     // TODO: Fix possible race-condition when request comes in before
+     // update is propagated
+-    if (nm.getState() == NodeState.DECOMMISSIONING) {
++    if (nm.getState() == NodeState.DECOMMISSIONING && node != null) {
+       this.rmContext
+           .getDispatcher()
+           .getEventHandler()
+           .handle(
+               new RMNodeResourceUpdateEvent(nm.getNodeID(), ResourceOption
+-                  .newInstance(getSchedulerNode(nm.getNodeID())
+-                      .getUsedResource(), 0)));
++                  .newInstance(node.getUsedResource(), 0)));
+     }
+     // Now node data structures are upto date and ready for scheduling.
+     if(LOG.isDebugEnabled()) {
+-      LOG.debug("Node being looked for scheduling " + nm
+-        + " availableResource: " + node.getAvailableResource());
++      LOG.debug(
++          "Node being looked for scheduling " + nm + " availableResource: " +
++              (node == null ? "unknown (decomissioned)" :
++                  node.getAvailableResource()));
+     }
+   }
+   
+@@ -1106,7 +1107,10 @@ public void handle(SchedulerEvent event) {
+       RMNode node = nodeUpdatedEvent.getRMNode();
+       nodeUpdate(node);
+       if (!scheduleAsynchronously) {
+-        allocateContainersToNode(getNode(node.getNodeID()));
++        FiCaSchedulerNode schedulerNode = getNode(node.getNodeID());
++        if (schedulerNode != null) {
++          allocateContainersToNode(schedulerNode);
++        }
+       }
+     }
+     break;
+diff --git a/hadoop-yarn-project/hadoop-yarn/hadoop-yarn-server/hadoop-yarn-server-resourcemanager/src/main/java/org/apache/hadoop/yarn/server/resourcemanager/scheduler/fair/FairScheduler.java b/hadoop-yarn-project/hadoop-yarn/hadoop-yarn-server/hadoop-yarn-server-resourcemanager/src/main/java/org/apache/hadoop/yarn/server/resourcemanager/scheduler/fair/FairScheduler.java
+index d9463f7..c023f35 100644
+--- a/hadoop-yarn-project/hadoop-yarn/hadoop-yarn-server/hadoop-yarn-server-resourcemanager/src/main/java/org/apache/hadoop/yarn/server/resourcemanager/scheduler/fair/FairScheduler.java
++++ b/hadoop-yarn-project/hadoop-yarn/hadoop-yarn-server/hadoop-yarn-server-resourcemanager/src/main/java/org/apache/hadoop/yarn/server/resourcemanager/scheduler/fair/FairScheduler.java
+@@ -861,6 +861,8 @@ private synchronized void nodeUpdate(RMNode nm) {
+           " cluster capacity: " + getClusterResource());
+     }
+     eventLog.log("HEARTBEAT", nm.getHostName());
++    // NOTICE: it is possible to not find the NodeID as a node can be
++    // decommissioned at the same time. Skip updates if node is null.
+     FSSchedulerNode node = getFSSchedulerNode(nm.getNodeID());
+ 
+     List<UpdatedContainerInfo> containerInfoList = nm.pullContainerUpdates();
+@@ -886,14 +888,13 @@ private synchronized void nodeUpdate(RMNode nm) {
+     // If the node is decommissioning, send an update to have the total
+     // resource equal to the used resource, so no available resource to
+     // schedule.
+-    if (nm.getState() == NodeState.DECOMMISSIONING) {
++    if (nm.getState() == NodeState.DECOMMISSIONING && node != null) {
+       this.rmContext
+           .getDispatcher()
+           .getEventHandler()
+           .handle(
+               new RMNodeResourceUpdateEvent(nm.getNodeID(), ResourceOption
+-                  .newInstance(getSchedulerNode(nm.getNodeID())
+-                      .getUsedResource(), 0)));
++                  .newInstance(node.getUsedResource(), 0)));
+     }
+ 
+     if (continuousSchedulingEnabled) {
+@@ -976,7 +977,7 @@ synchronized void attemptScheduling(FSSchedulerNode node) {
+       return;
+     }
+ 
+-    final NodeId nodeID = node.getNodeID();
++    final NodeId nodeID = (node != null ? node.getNodeID() : null);
+     if (!nodeTracker.exists(nodeID)) {
+       // The node might have just been removed while this thread was waiting
+       // on the synchronized lock before it entered this synchronized method
+diff --git a/hadoop-yarn-project/hadoop-yarn/hadoop-yarn-server/hadoop-yarn-server-resourcemanager/src/main/java/org/apache/hadoop/yarn/server/resourcemanager/scheduler/fifo/FifoScheduler.java b/hadoop-yarn-project/hadoop-yarn/hadoop-yarn-server/hadoop-yarn-server-resourcemanager/src/main/java/org/apache/hadoop/yarn/server/resourcemanager/scheduler/fifo/FifoScheduler.java
+index a36262b..47f205b 100644
+--- a/hadoop-yarn-project/hadoop-yarn/hadoop-yarn-server/hadoop-yarn-server-resourcemanager/src/main/java/org/apache/hadoop/yarn/server/resourcemanager/scheduler/fifo/FifoScheduler.java
++++ b/hadoop-yarn-project/hadoop-yarn/hadoop-yarn-server/hadoop-yarn-server-resourcemanager/src/main/java/org/apache/hadoop/yarn/server/resourcemanager/scheduler/fifo/FifoScheduler.java
+@@ -735,14 +735,13 @@ private synchronized void nodeUpdate(RMNode rmNode) {
+     // If the node is decommissioning, send an update to have the total
+     // resource equal to the used resource, so no available resource to
+     // schedule.
+-    if (rmNode.getState() == NodeState.DECOMMISSIONING) {
++    if (rmNode.getState() == NodeState.DECOMMISSIONING && node != null) {
+       this.rmContext
+           .getDispatcher()
+           .getEventHandler()
+           .handle(
+               new RMNodeResourceUpdateEvent(rmNode.getNodeID(), ResourceOption
+-                  .newInstance(getSchedulerNode(rmNode.getNodeID())
+-                      .getUsedResource(), 0)));
++                  .newInstance(node.getUsedResource(), 0)));
+     }
+ 
+     if (rmContext.isWorkPreservingRecoveryEnabled()
+@@ -750,7 +749,9 @@ private synchronized void nodeUpdate(RMNode rmNode) {
+       return;
+     }
+ 
+-    if (Resources.greaterThanOrEqual(resourceCalculator, getClusterResource(),
++    // A decommissioned node might be removed before we get here
++    if (node != null  &&
++        Resources.greaterThanOrEqual(resourceCalculator, getClusterResource(),
+             node.getAvailableResource(), minimumAllocation)) {
+       LOG.debug("Node heartbeat " + rmNode.getNodeID() +
+           " available resource = " + node.getAvailableResource());
+diff --git a/hadoop-yarn-project/hadoop-yarn/hadoop-yarn-server/hadoop-yarn-server-resourcemanager/src/test/java/org/apache/hadoop/yarn/server/resourcemanager/scheduler/capacity/TestCapacityScheduler.java b/hadoop-yarn-project/hadoop-yarn/hadoop-yarn-server/hadoop-yarn-server-resourcemanager/src/test/java/org/apache/hadoop/yarn/server/resourcemanager/scheduler/capacity/TestCapacityScheduler.java
+index 72bf7e2..6d56e25 100644
+--- a/hadoop-yarn-project/hadoop-yarn/hadoop-yarn-server/hadoop-yarn-server-resourcemanager/src/test/java/org/apache/hadoop/yarn/server/resourcemanager/scheduler/capacity/TestCapacityScheduler.java
++++ b/hadoop-yarn-project/hadoop-yarn/hadoop-yarn-server/hadoop-yarn-server-resourcemanager/src/test/java/org/apache/hadoop/yarn/server/resourcemanager/scheduler/capacity/TestCapacityScheduler.java
+@@ -235,15 +235,12 @@ public void testConfValidation() throws Exception {
+     }
+   }
+ 
+-  private org.apache.hadoop.yarn.server.resourcemanager.NodeManager
+-      registerNode(String hostName, int containerManagerPort, int httpPort,
+-          String rackName, Resource capability)
++  private NodeManager registerNode(String hostName, int containerManagerPort,
++      int httpPort, String rackName, Resource capability)
+           throws IOException, YarnException {
+-    org.apache.hadoop.yarn.server.resourcemanager.NodeManager nm =
+-        new org.apache.hadoop.yarn.server.resourcemanager.NodeManager(
+-            hostName, containerManagerPort, httpPort, rackName, capability,
+-            resourceManager);
+-    NodeAddedSchedulerEvent nodeAddEvent1 = 
++    NodeManager nm = new NodeManager(hostName, containerManagerPort, httpPort,
++        rackName, capability, resourceManager);
++    NodeAddedSchedulerEvent nodeAddEvent1 =
+         new NodeAddedSchedulerEvent(resourceManager.getRMContext()
+             .getRMNodes().get(nm.getNodeId()));
+     resourceManager.getResourceScheduler().handle(nodeAddEvent1);
+@@ -2236,6 +2233,31 @@ public void testNodemanagerReconnect() throws Exception {
+   }
+ 
+   @Test
++  public void testRemovedNodeDecomissioningNode() throws Exception {
++    // Register nodemanager
++    NodeManager nm = registerNode("host_decom", 1234, 2345,
++        NetworkTopology.DEFAULT_RACK, Resources.createResource(8 * GB, 4));
++
++    RMNode node =
++        resourceManager.getRMContext().getRMNodes().get(nm.getNodeId());
++    // Send a heartbeat to kick the tires on the Scheduler
++    NodeUpdateSchedulerEvent nodeUpdate = new NodeUpdateSchedulerEvent(node);
++    resourceManager.getResourceScheduler().handle(nodeUpdate);
++
++    // force remove the node to simulate race condition
++    ((CapacityScheduler) resourceManager.getResourceScheduler()).
++        getNodeTracker().removeNode(nm.getNodeId());
++    // Kick off another heartbeat with the node state mocked to decommissioning
++    RMNode spyNode =
++        Mockito.spy(resourceManager.getRMContext().getRMNodes()
++            .get(nm.getNodeId()));
++    when(spyNode.getState()).thenReturn(NodeState.DECOMMISSIONING);
++    resourceManager.getResourceScheduler().handle(
++        new NodeUpdateSchedulerEvent(spyNode));
++  }
++
++
++  @Test
+   public void testResourceUpdateDecommissioningNode() throws Exception {
+     // Mock the RMNodeResourceUpdate event handler to update SchedulerNode
+     // to have 0 available resource
+@@ -2260,9 +2282,8 @@ public void handle(Event event) {
+     ((AsyncDispatcher) mockDispatcher).start();
+     // Register node
+     String host_0 = "host_0";
+-    org.apache.hadoop.yarn.server.resourcemanager.NodeManager nm_0 =
+-        registerNode(host_0, 1234, 2345, NetworkTopology.DEFAULT_RACK,
+-            Resources.createResource(8 * GB, 4));
++    NodeManager nm_0 = registerNode(host_0, 1234, 2345,
++        NetworkTopology.DEFAULT_RACK, Resources.createResource(8 * GB, 4));
+     // ResourceRequest priorities
+     Priority priority_0 =
+         org.apache.hadoop.yarn.server.resourcemanager.resource.Priority
+diff --git a/hadoop-yarn-project/hadoop-yarn/hadoop-yarn-server/hadoop-yarn-server-resourcemanager/src/test/java/org/apache/hadoop/yarn/server/resourcemanager/scheduler/fair/TestFairScheduler.java b/hadoop-yarn-project/hadoop-yarn/hadoop-yarn-server/hadoop-yarn-server-resourcemanager/src/test/java/org/apache/hadoop/yarn/server/resourcemanager/scheduler/fair/TestFairScheduler.java
+index e731e4c..32472bc 100644
+--- a/hadoop-yarn-project/hadoop-yarn/hadoop-yarn-server/hadoop-yarn-server-resourcemanager/src/test/java/org/apache/hadoop/yarn/server/resourcemanager/scheduler/fair/TestFairScheduler.java
++++ b/hadoop-yarn-project/hadoop-yarn/hadoop-yarn-server/hadoop-yarn-server-resourcemanager/src/test/java/org/apache/hadoop/yarn/server/resourcemanager/scheduler/fair/TestFairScheduler.java
+@@ -74,6 +74,7 @@
+ import org.apache.hadoop.yarn.server.resourcemanager.ApplicationMasterService;
+ import org.apache.hadoop.yarn.server.resourcemanager.MockNodes;
+ import org.apache.hadoop.yarn.server.resourcemanager.MockRM;
++import org.apache.hadoop.yarn.server.resourcemanager.NodeManager;
+ import org.apache.hadoop.yarn.server.resourcemanager.RMContext;
+ import org.apache.hadoop.yarn.server.resourcemanager.resource.ResourceType;
+ import org.apache.hadoop.yarn.server.resourcemanager.rmapp.MockRMApp;
+@@ -5337,6 +5338,30 @@ public void testUpdateDemand() throws IOException {
+   }
+ 
+   @Test
++  public void testRemovedNodeDecomissioningNode() throws Exception {
++    // Register nodemanager
++    NodeManager nm = registerNode("host_decom", 1234, 2345,
++        NetworkTopology.DEFAULT_RACK, Resources.createResource(8 * GB, 4));
++
++    RMNode node =
++        resourceManager.getRMContext().getRMNodes().get(nm.getNodeId());
++    // Send a heartbeat to kick the tires on the Scheduler
++    NodeUpdateSchedulerEvent nodeUpdate = new NodeUpdateSchedulerEvent(node);
++    resourceManager.getResourceScheduler().handle(nodeUpdate);
++
++    // Force remove the node to simulate race condition
++    ((FairScheduler) resourceManager.getResourceScheduler())
++        .getNodeTracker().removeNode(nm.getNodeId());
++    // Kick off another heartbeat with the node state mocked to decommissioning
++    RMNode spyNode =
++        Mockito.spy(resourceManager.getRMContext().getRMNodes()
++            .get(nm.getNodeId()));
++    when(spyNode.getState()).thenReturn(NodeState.DECOMMISSIONING);
++    resourceManager.getResourceScheduler().handle(
++        new NodeUpdateSchedulerEvent(spyNode));
++  }
++
++  @Test
+   public void testResourceUpdateDecommissioningNode() throws Exception {
+     // Mock the RMNodeResourceUpdate event handler to update SchedulerNode
+     // to have 0 available resource
+@@ -5361,9 +5386,8 @@ public void handle(Event event) {
+     ((AsyncDispatcher) mockDispatcher).start();
+     // Register node
+     String host_0 = "host_0";
+-    org.apache.hadoop.yarn.server.resourcemanager.NodeManager nm_0 =
+-        registerNode(host_0, 1234, 2345, NetworkTopology.DEFAULT_RACK,
+-            Resources.createResource(8 * GB, 4));
++    NodeManager nm_0 = registerNode(host_0, 1234, 2345,
++        NetworkTopology.DEFAULT_RACK, Resources.createResource(8 * GB, 4));
+ 
+     RMNode node =
+         resourceManager.getRMContext().getRMNodes().get(nm_0.getNodeId());
+@@ -5401,13 +5425,12 @@ public void handle(Event event) {
+     Assert.assertEquals(availableResource.getVirtualCores(), 0);
+   }
+ 
+-  private org.apache.hadoop.yarn.server.resourcemanager.NodeManager registerNode(
+-      String hostName, int containerManagerPort, int httpPort, String rackName,
+-      Resource capability) throws IOException, YarnException {
+-    org.apache.hadoop.yarn.server.resourcemanager.NodeManager nm =
+-        new org.apache.hadoop.yarn.server.resourcemanager.NodeManager(hostName,
+-            containerManagerPort, httpPort, rackName, capability,
+-            resourceManager);
++  private NodeManager registerNode(String hostName, int containerManagerPort,
++                                   int httpPort, String rackName,
++                                   Resource capability)
++      throws IOException, YarnException {
++    NodeManager nm = new NodeManager(hostName, containerManagerPort, httpPort,
++        rackName, capability, resourceManager);
+     NodeAddedSchedulerEvent nodeAddEvent1 =
+         new NodeAddedSchedulerEvent(resourceManager.getRMContext().getRMNodes()
+             .get(nm.getNodeId()));
+diff --git a/hadoop-yarn-project/hadoop-yarn/hadoop-yarn-server/hadoop-yarn-server-resourcemanager/src/test/java/org/apache/hadoop/yarn/server/resourcemanager/scheduler/fifo/TestFifoScheduler.java b/hadoop-yarn-project/hadoop-yarn/hadoop-yarn-server/hadoop-yarn-server-resourcemanager/src/test/java/org/apache/hadoop/yarn/server/resourcemanager/scheduler/fifo/TestFifoScheduler.java
+index ffd6c3b..a52e182 100644
+--- a/hadoop-yarn-project/hadoop-yarn/hadoop-yarn-server/hadoop-yarn-server-resourcemanager/src/test/java/org/apache/hadoop/yarn/server/resourcemanager/scheduler/fifo/TestFifoScheduler.java
++++ b/hadoop-yarn-project/hadoop-yarn/hadoop-yarn-server/hadoop-yarn-server-resourcemanager/src/test/java/org/apache/hadoop/yarn/server/resourcemanager/scheduler/fifo/TestFifoScheduler.java
+@@ -58,6 +58,7 @@
+ import org.apache.hadoop.yarn.server.resourcemanager.Application;
+ import org.apache.hadoop.yarn.server.resourcemanager.MockNodes;
+ import org.apache.hadoop.yarn.server.resourcemanager.MockRM;
++import org.apache.hadoop.yarn.server.resourcemanager.NodeManager;
+ import org.apache.hadoop.yarn.server.resourcemanager.RMContext;
+ import org.apache.hadoop.yarn.server.resourcemanager.RMContextImpl;
+ import org.apache.hadoop.yarn.server.resourcemanager.ResourceManager;
+@@ -116,14 +117,11 @@ public void tearDown() throws Exception {
+     resourceManager.stop();
+   }
+   
+-  private org.apache.hadoop.yarn.server.resourcemanager.NodeManager
+-      registerNode(String hostName, int containerManagerPort, int nmHttpPort,
+-          String rackName, Resource capability) throws IOException,
+-          YarnException {
+-    org.apache.hadoop.yarn.server.resourcemanager.NodeManager nm =
+-        new org.apache.hadoop.yarn.server.resourcemanager.NodeManager(hostName,
+-            containerManagerPort, nmHttpPort, rackName, capability,
+-            resourceManager);
++  private NodeManager registerNode(String hostName, int containerManagerPort,
++     int nmHttpPort, String rackName, Resource capability)
++      throws IOException, YarnException {
++    NodeManager nm = new NodeManager(hostName, containerManagerPort, nmHttpPort,
++        rackName, capability, resourceManager);
+     NodeAddedSchedulerEvent nodeAddEvent1 =
+         new NodeAddedSchedulerEvent(resourceManager.getRMContext().getRMNodes()
+             .get(nm.getNodeId()));
+@@ -373,16 +371,14 @@ public void testFifoScheduler() throws Exception {
+     
+     // Register node1
+     String host_0 = "host_0";
+-    org.apache.hadoop.yarn.server.resourcemanager.NodeManager nm_0 = 
+-      registerNode(host_0, 1234, 2345, NetworkTopology.DEFAULT_RACK, 
+-          Resources.createResource(4 * GB, 1));
++    NodeManager nm_0 = registerNode(host_0, 1234, 2345,
++        NetworkTopology.DEFAULT_RACK, Resources.createResource(4 * GB, 1));
+     nm_0.heartbeat();
+     
+     // Register node2
+     String host_1 = "host_1";
+-    org.apache.hadoop.yarn.server.resourcemanager.NodeManager nm_1 = 
+-      registerNode(host_1, 1234, 2345, NetworkTopology.DEFAULT_RACK, 
+-          Resources.createResource(2 * GB, 1));
++    NodeManager nm_1 = registerNode(host_1, 1234, 2345,
++        NetworkTopology.DEFAULT_RACK, Resources.createResource(2 * GB, 1));
+     nm_1.heartbeat();
+ 
+     // ResourceRequest priorities
+@@ -644,6 +640,30 @@ public void testAddAndRemoveAppFromFiFoScheduler() throws Exception {
+   }
+ 
+   @Test
++  public void testRemovedNodeDecomissioningNode() throws Exception {
++    // Register nodemanager
++    NodeManager nm = registerNode("host_decom", 1234, 2345,
++        NetworkTopology.DEFAULT_RACK, Resources.createResource(8 * GB, 4));
++
++    RMNode node =
++        resourceManager.getRMContext().getRMNodes().get(nm.getNodeId());
++    // Send a heartbeat to kick the tires on the Scheduler
++    NodeUpdateSchedulerEvent nodeUpdate = new NodeUpdateSchedulerEvent(node);
++    resourceManager.getResourceScheduler().handle(nodeUpdate);
++
++    // Force remove the node to simulate race condition
++    ((FifoScheduler) resourceManager.getResourceScheduler())
++        .getNodeTracker().removeNode(nm.getNodeId());
++    // Kick off another heartbeat with the node state mocked to decommissioning
++    RMNode spyNode =
++        Mockito.spy(resourceManager.getRMContext().getRMNodes()
++            .get(nm.getNodeId()));
++    when(spyNode.getState()).thenReturn(NodeState.DECOMMISSIONING);
++    resourceManager.getResourceScheduler().handle(
++        new NodeUpdateSchedulerEvent(spyNode));
++  }
++
++  @Test
+   public void testResourceUpdateDecommissioningNode() throws Exception {
+     // Mock the RMNodeResourceUpdate event handler to update SchedulerNode
+     // to have 0 available resource
+@@ -668,9 +688,8 @@ public void handle(Event event) {
+     ((AsyncDispatcher) mockDispatcher).start();
+     // Register node
+     String host_0 = "host_0";
+-    org.apache.hadoop.yarn.server.resourcemanager.NodeManager nm_0 =
+-        registerNode(host_0, 1234, 2345, NetworkTopology.DEFAULT_RACK,
+-            Resources.createResource(8 * GB, 4));
++    NodeManager nm_0 = registerNode(host_0, 1234, 2345,
++        NetworkTopology.DEFAULT_RACK, Resources.createResource(8 * GB, 4));
+     nm_0.heartbeat();
+     // ResourceRequest priorities
+     Priority priority_0 =
+@@ -739,7 +758,7 @@ private void checkApplicationResourceUsage(int expected,
+   }
+   
+   private void checkNodeResourceUsage(int expected,
+-      org.apache.hadoop.yarn.server.resourcemanager.NodeManager node) {
++      NodeManager node) {
+     Assert.assertEquals(expected, node.getUsed().getMemory());
+     node.checkResourceUsage();
+   }
+-- 
+1.7.9.5
+

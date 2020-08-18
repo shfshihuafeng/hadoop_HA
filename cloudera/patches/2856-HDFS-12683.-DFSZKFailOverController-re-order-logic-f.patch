@@ -1,0 +1,115 @@
+From 2b40d1444e5255d61d5915f3b5e11d70aca9d34d Mon Sep 17 00:00:00 2001
+From: Arpit Agarwal <arp@apache.org>
+Date: Mon, 23 Oct 2017 10:47:16 -0700
+Subject: [PATCH 2856/2863] HDFS-12683. DFSZKFailOverController re-order logic
+ for logging Exception. Contributed by Bharat
+ Viswanadham.
+
+==C5_APPROVED_BUGFIX==
+
+Ref.: CDH-77540
+
+(cherry picked from commit a373094bf9c8a3f8d8f9610995046cbd61c47da6)
+
+Change-Id: I24ac8daa265fb664d943c6915aba2f36edc74eee
+(cherry picked from commit d708fd6d7a7d0229b607139766b2dd24167dae65)
+---
+ .../org/apache/hadoop/ha/ZKFailoverController.java |   47 ++++++++++++--------
+ .../hadoop/hdfs/tools/DFSZKFailoverController.java |    3 +-
+ 2 files changed, 30 insertions(+), 20 deletions(-)
+
+diff --git a/hadoop-common-project/hadoop-common/src/main/java/org/apache/hadoop/ha/ZKFailoverController.java b/hadoop-common-project/hadoop-common/src/main/java/org/apache/hadoop/ha/ZKFailoverController.java
+index 5d11707..4b97f8b 100644
+--- a/hadoop-common-project/hadoop-common/src/main/java/org/apache/hadoop/ha/ZKFailoverController.java
++++ b/hadoop-common-project/hadoop-common/src/main/java/org/apache/hadoop/ha/ZKFailoverController.java
+@@ -185,33 +185,39 @@ public Integer run() {
+   
+ 
+   private int doRun(String[] args)
+-      throws HadoopIllegalArgumentException, IOException, InterruptedException {
++      throws Exception {
+     try {
+       initZK();
+     } catch (KeeperException ke) {
+       LOG.fatal("Unable to start failover controller. Unable to connect "
+           + "to ZooKeeper quorum at " + zkQuorum + ". Please check the "
+           + "configured value for " + ZK_QUORUM_KEY + " and ensure that "
+-          + "ZooKeeper is running.");
++          + "ZooKeeper is running.", ke);
+       return ERR_CODE_NO_ZK;
+     }
+-    if (args.length > 0) {
+-      if ("-formatZK".equals(args[0])) {
+-        boolean force = false;
+-        boolean interactive = true;
+-        for (int i = 1; i < args.length; i++) {
+-          if ("-force".equals(args[i])) {
+-            force = true;
+-          } else if ("-nonInteractive".equals(args[i])) {
+-            interactive = false;
+-          } else {
+-            badArg(args[i]);
++    try {
++      if (args.length > 0) {
++        if ("-formatZK".equals(args[0])) {
++          boolean force = false;
++          boolean interactive = true;
++          for (int i = 1; i < args.length; i++) {
++            if ("-force".equals(args[i])) {
++              force = true;
++            } else if ("-nonInteractive".equals(args[i])) {
++              interactive = false;
++            } else {
++              badArg(args[i]);
++            }
+           }
++          return formatZK(force, interactive);
++        }
++        else {
++          badArg(args[0]);
+         }
+-        return formatZK(force, interactive);
+-      } else {
+-        badArg(args[0]);
+       }
++    } catch (Exception e){
++      LOG.error("The failover controller encounters runtime error", e);
++      throw e;
+     }
+ 
+     if (!elector.parentZNodeExists()) {
+@@ -230,11 +236,14 @@ private int doRun(String[] args)
+       return ERR_CODE_NO_FENCER;
+     }
+ 
+-    initRPC();
+-    initHM();
+-    startRPC();
+     try {
++      initRPC();
++      initHM();
++      startRPC();
+       mainLoop();
++    } catch (Exception e) {
++      LOG.error("The failover controller encounters runtime error: ", e);
++      throw e;
+     } finally {
+       rpcServer.stopAndJoin();
+       
+diff --git a/hadoop-hdfs-project/hadoop-hdfs/src/main/java/org/apache/hadoop/hdfs/tools/DFSZKFailoverController.java b/hadoop-hdfs-project/hadoop-hdfs/src/main/java/org/apache/hadoop/hdfs/tools/DFSZKFailoverController.java
+index f125a27..5ea3977 100644
+--- a/hadoop-hdfs-project/hadoop-hdfs/src/main/java/org/apache/hadoop/hdfs/tools/DFSZKFailoverController.java
++++ b/hadoop-hdfs-project/hadoop-hdfs/src/main/java/org/apache/hadoop/hdfs/tools/DFSZKFailoverController.java
+@@ -191,7 +191,8 @@ public static void main(String args[])
+     try {
+       retCode = zkfc.run(parser.getRemainingArgs());
+     } catch (Throwable t) {
+-      LOG.fatal("Got a fatal error, exiting now", t);
++      LOG.fatal("DFSZKFailOverController exiting due to earlier exception "
++          + t);
+     }
+     System.exit(retCode);
+   }
+-- 
+1.7.9.5
+

@@ -1,0 +1,30 @@
+From a1fc300942d594c8a6e058ca69caadbad6256bef Mon Sep 17 00:00:00 2001
+From: Gera Shegalov <gera@apache.org>
+Date: Wed, 3 Jun 2015 23:41:07 -0700
+Subject: [PATCH 2853/2863] CDH-76297,MAPREDUCE-6382. Don't escape HTML links
+ in Diagnostics in JHS job overview. (Siqi Li via
+ gera)
+
+(cherry picked from commit e8302071ff16247a3d0cfc2dcca02da1bbf4db18)
+
+Change-Id: Iff3f680273d291ed3d3a110147d6a2a308b6cc7e
+---
+ .../hadoop/mapreduce/v2/hs/webapp/HsJobBlock.java  |    2 +-
+ 1 file changed, 1 insertion(+), 1 deletion(-)
+
+diff --git a/hadoop-mapreduce-project/hadoop-mapreduce-client/hadoop-mapreduce-client-hs/src/main/java/org/apache/hadoop/mapreduce/v2/hs/webapp/HsJobBlock.java b/hadoop-mapreduce-project/hadoop-mapreduce-client/hadoop-mapreduce-client-hs/src/main/java/org/apache/hadoop/mapreduce/v2/hs/webapp/HsJobBlock.java
+index 89f6707..0d5b03a 100644
+--- a/hadoop-mapreduce-project/hadoop-mapreduce-client/hadoop-mapreduce-client-hs/src/main/java/org/apache/hadoop/mapreduce/v2/hs/webapp/HsJobBlock.java
++++ b/hadoop-mapreduce-project/hadoop-mapreduce-client/hadoop-mapreduce-client-hs/src/main/java/org/apache/hadoop/mapreduce/v2/hs/webapp/HsJobBlock.java
+@@ -113,7 +113,7 @@
+       for(String diag: diagnostics) {
+         b.append(addTaskLinks(diag));
+       }
+-      infoBlock._("Diagnostics:", b.toString());
++      infoBlock._r("Diagnostics:", b.toString());
+     }
+ 
+     if(job.getNumMaps() > 0) {
+-- 
+1.7.9.5
+
