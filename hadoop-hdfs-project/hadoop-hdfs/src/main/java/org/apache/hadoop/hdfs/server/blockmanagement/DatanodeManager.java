@@ -629,7 +629,7 @@ public class DatanodeManager {
   }
 
   /** Physically remove node from datanodeMap. */
-  private void wipeDatanode(final DatanodeID node) {
+  public void wipeDatanode(final DatanodeID node) {
     final String key = node.getDatanodeUuid();
     synchronized (datanodeMap) {
       host2DatanodeMap.remove(datanodeMap.remove(key));
