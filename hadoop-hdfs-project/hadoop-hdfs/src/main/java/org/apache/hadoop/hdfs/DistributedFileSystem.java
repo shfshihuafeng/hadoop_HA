@@ -2453,4 +2453,10 @@ public class DistributedFileSystem extends FileSystem {
       EnumSet<OpenFilesType> openFilesTypes, String path) throws IOException {
     return dfs.listOpenFiles(openFilesTypes, path);
   }
+  /**
+ * clear down node info on NN
+ */
+  public boolean shutdowDatanode(String node, boolean immediately) throws IOException {
+    return dfs.shutdowDatanode(node, immediately);
+  }
 }

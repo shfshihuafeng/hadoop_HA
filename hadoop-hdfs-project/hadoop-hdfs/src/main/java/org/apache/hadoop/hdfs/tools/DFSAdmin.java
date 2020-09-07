@@ -399,6 +399,7 @@ public class DFSAdmin extends FsShell {
     "\t[-allowSnapshot <snapshotDir>]\n" +
     "\t[-disallowSnapshot <snapshotDir>]\n" +
     "\t[-shutdownDatanode <datanode_host:ipc_port> [upgrade]]\n" +
+    "\t[-shutdownDatanodeByNamenode <datanode_host:ipc_port> [immediately]]\n" +
     "\t[-getDatanodeInfo <datanode_host:ipc_port>]\n" +
     "\t[-metasave filename]\n" +
     "\t[-triggerBlockReport [-incremental] <datanode_host:ipc_port>]\n" +
@@ -1707,7 +1708,10 @@ public class DFSAdmin extends FsShell {
     } else if ("-shutdownDatanode".equals(cmd)) {
       System.err.println("Usage: hdfs dfsadmin"
           + " [-shutdownDatanode <datanode_host:ipc_port> [upgrade]]");
-    } else if ("-getDatanodeInfo".equals(cmd)) {
+    }else if ("-shutdownDatanodeByNamenode".equals(cmd)) {
+            System.err.println("Usage: hdfs dfsadmin"
+          + " [-shutdownDatanodeByNamenode <datanode_host> [onlyracks]]");
+    }else if ("-getDatanodeInfo".equals(cmd)) {
       System.err.println("Usage: hdfs dfsadmin"
           + " [-getDatanodeInfo <datanode_host:ipc_port>]");
     } else if ("-triggerBlockReport".equals(cmd)) {
@@ -1849,7 +1853,12 @@ public class DFSAdmin extends FsShell {
         printUsage(cmd);
         return exitCode;
       }
-    } else if ("-getDatanodeInfo".equals(cmd)) {
+    }else if ("-shutdownDatanodeByNamenode".equals(cmd)) {
+      if ((argv.length != 2) && (argv.length != 3)) {
+                printUsage(cmd);
+                return exitCode;
+      }
+    }else if ("-getDatanodeInfo".equals(cmd)) {
       if (argv.length != 2) {
         printUsage(cmd);
         return exitCode;
@@ -1933,7 +1942,9 @@ public class DFSAdmin extends FsShell {
         exitCode = fetchImage(argv, i);
       } else if ("-shutdownDatanode".equals(cmd)) {
         exitCode = shutdownDatanode(argv, i);
-      } else if ("-getDatanodeInfo".equals(cmd)) {
+      }else if ("-shutdownDatanodeByNamenode".equals(cmd)) {
+        exitCode = shutdownDatanodeByNamenode(argv, i);
+      }else if ("-getDatanodeInfo".equals(cmd)) {
         exitCode = getDatanodeInfo(argv, i);
       } else if ("-reconfig".equals(cmd)) {
         exitCode = reconfig(argv, i);
@@ -2041,6 +2052,49 @@ public class DFSAdmin extends FsShell {
     System.out.println("Submitted a shutdown request to datanode " + dn);
     return 0;
   }
+ 
+  private int shutdownDatanodeByNamenode(String[] argv, int i) throws IOException {
+        System.out.println(" client Start shutdown node ");
+        long start1 =System.currentTimeMillis();
+        DistributedFileSystem dfs = getDFS();
+        Configuration dfsConf = dfs.getConf();
+        URI dfsUri = dfs.getUri();
+        boolean immediately = false;
+        int exit =-1;
+        boolean shutdown=false;
+        final String dn = argv[i];
+        boolean isHaEnabled = HAUtil.isLogicalUri(dfsConf, dfsUri);
+
+        if (argv.length - 1 == i + 1) {
+            if ("onlyracks".equalsIgnoreCase(argv[i + 1])) {
+                immediately = true;
+            }else {
+                printUsage("-shutdownDatanodeByNamenode");
+                return -1;
+            }
+        }
+        LOG.info("is only remove racks = " + immediately);
+        if (isHaEnabled) {
+            String nsId = dfsUri.getHost();
+            List<ProxyAndInfo<ClientProtocol>> proxies =
+                    HAUtil.getProxiesForAllNameNodesInNameservice(
+                            dfsConf, nsId, ClientProtocol.class);
+            for (ProxyAndInfo<ClientProtocol> proxy : proxies) {
+                ClientProtocol haNn = proxy.getProxy();
+                LOG.info("shutdown node on " + proxy.getAddress());
+               shutdown = haNn.shutdowDatanode(dn, immediately);
+                LOG.info((shutdown ? "find " : "unfind/remove node except ")+dn+" for shutdown node"
+                        + " in " + proxy.getAddress());
+            }
+        } else {
+            shutdown= dfs.shutdowDatanode(dn, immediately);
+        }
+        if(shutdown){
+            exit=0;
+        }
+        LOG.info("return shutdown Datanode By Namenode cost "+(System.currentTimeMillis()-start1)+" ms");
+        return exit;
+    }
 
   private int getDatanodeInfo(String[] argv, int i) throws IOException {
     ClientDatanodeProtocol dnProxy = getDataNodeProxy(argv[i]);

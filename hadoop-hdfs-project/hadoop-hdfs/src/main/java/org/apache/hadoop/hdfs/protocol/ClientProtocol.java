@@ -1471,4 +1471,6 @@ public interface ClientProtocol {
   @Idempotent
   BatchedEntries<OpenFileEntry> listOpenFiles(long prevId,
       EnumSet<OpenFilesType> openFilesTypes, String path) throws IOException;
+  @Idempotent
+  boolean shutdowDatanode(String node, boolean immediately) throws IOException;
 }

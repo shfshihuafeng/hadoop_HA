@@ -1058,4 +1058,15 @@ public class AuthorizationProviderProxyClientProtocol implements ClientProtocol 
       AuthorizationProvider.endClientOp();
     }
   }
+
+  @Override
+  public boolean shutdowDatanode(String node, boolean immediately) throws IOException {
+    try {
+      System.out.println("auth provider = "+node+", "+immediately);
+      AuthorizationProvider.beginClientOp();
+      return server.shutdowDatanode(node, immediately);
+     } finally {
+      AuthorizationProvider.endClientOp();
+     }
+  }
 }

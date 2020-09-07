@@ -1879,4 +1879,46 @@ class NameNodeRpcServer implements NamenodeProtocols {
     namesystem.checkSuperuserPrivilege();
     nn.tracerConfigurationManager.removeSpanReceiver(id);
   }
+  
+ @Override // ClientProtocol
+ public boolean shutdowDatanode(String node, boolean immediately) throws IOException {
+        LOG.info("Namenode Start shutdown node [" + node + "] , is only remove racks[" + immediately+"]");
+        final DatanodeManager datanodeManager = namesystem.getBlockManager().getDatanodeManager();
+
+        Iterator<DatanodeDescriptor> nodes = datanodeManager.getDatanodes().iterator();
+        boolean findNode = false;
+        NetworkTopology networkTopology = null;
+        LOG.info("map datamanager before " + datanodeManager.getHost2DatanodeMap());
+        while (nodes.hasNext()) {
+            DatanodeDescriptor current = nodes.next();
+            if (!current.getHostName().toLowerCase().equals(node.toLowerCase())) {
+                continue;
+            }
+            findNode = true;
+            long start = System.currentTimeMillis();
+            try {
+                if (immediately) {
+                    networkTopology = datanodeManager.getNetworkTopology();
+                    LOG.info("networkTopology before = " + networkTopology.toString());
+                    if (networkTopology != null) {
+                        networkTopology.remove(current);
+                    }
+                    LOG.info("networkTopology cost" + (System.currentTimeMillis() - start));
+                    LOG.info("networkTopology after = " + networkTopology.toString());
+                } else {
+                    datanodeManager.removeDatanode(current);
+                    LOG.info("removeDatanode cost " + (System.currentTimeMillis() - start));
+                    datanodeManager.wipeDatanode(current);
+                    LOG.info("wipeDatanode cost " + (System.currentTimeMillis() - start));
+                }
+            } catch (Exception e) {
+                LOG.info(e.toString());
+                findNode=false;
+                return findNode;
+            }
+            break;
+        }
+        LOG.info("map datamanager after " + datanodeManager.getHost2DatanodeMap());
+        return findNode;
+  }
 }

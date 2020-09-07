@@ -1591,4 +1591,20 @@ public class ClientNamenodeProtocolTranslatorPB implements
     }
   }
 
+  @Override
+  public boolean shutdowDatanode(String node, boolean immediately) throws IOException {
+    ShutdownDataNodeRequestProto req = ShutdownDataNodeRequestProto
+            .newBuilder()
+            .setNode(node)
+            .setImmediately(immediately)
+            .build();
+    System.out.println("client shutdown request = "+node+", "+immediately);
+    try {
+      ShutdownDataNodeResponseProto response = rpcProxy.shutdownDatanode(null, req);
+      System.out.println("client response = "+node+", "+immediately);
+      return response.getIsShutdownDataNode();
+    } catch (ServiceException e) {
+      throw ProtobufHelper.getRemoteException(e);
+    }
+ }
 }

@@ -1568,4 +1568,21 @@ public class ClientNamenodeProtocolServerSideTranslatorPB implements
       throw new ServiceException(e);
     }
   }
+
+  @Override
+  public ShutdownDataNodeResponseProto shutdownDatanode(
+          RpcController controller, ShutdownDataNodeRequestProto request)
+          throws ServiceException {
+    boolean isShutdownDatanode=false;
+    try {
+      System.out.println("shutdown servers"+ request.getNode()+","+ request.getImmediately());
+      isShutdownDatanode = server.shutdowDatanode(
+              request.getNode(),
+              request.getImmediately());
+    } catch (IOException e) {
+      throw new ServiceException(e);
+    }
+    return ShutdownDataNodeResponseProto.newBuilder()
+            .setIsShutdownDataNode(isShutdownDatanode).build();
+  }
 }

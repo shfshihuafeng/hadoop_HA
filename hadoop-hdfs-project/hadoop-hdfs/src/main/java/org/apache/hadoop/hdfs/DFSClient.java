@@ -3839,4 +3839,19 @@ public class DFSClient implements java.io.Closeable, RemotePeerFactory,
     checkOpen();
     return new OpenFilesIterator(namenode, tracer, openFilesTypes, path);
   }
+   /**
+ *  clear shutdownnode by NameNode.
+ * @param shutdownnode
+ * @param rack
+ * @throws IOException
+ */
+ public boolean shutdowDatanode(String node, boolean immediately) throws IOException {
+    try {
+      boolean b = namenode.shutdowDatanode(node, immediately);
+      return b;
+
+    } catch(RemoteException re) {
+      throw re.unwrapRemoteException(AccessControlException.class);
+    }
+  }
 }
