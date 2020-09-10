@@ -27,7 +27,9 @@ import org.apache.hadoop.hdfs.protocol.ExtendedBlock;
 import org.apache.hadoop.hdfs.protocol.RecoveryInProgressException;
 import org.apache.hadoop.hdfs.protocolPB.DatanodeProtocolClientSideTranslatorPB;
 import org.apache.hadoop.hdfs.server.common.HdfsServerConstants.ReplicaState;
+import org.apache.hadoop.hdfs.server.protocol.BlockRecoveryCommand;
 import org.apache.hadoop.hdfs.server.protocol.BlockRecoveryCommand.RecoveringBlock;
+import org.apache.hadoop.hdfs.server.protocol.DatanodeCommand;
 import org.apache.hadoop.hdfs.server.protocol.InterDatanodeProtocol;
 import org.apache.hadoop.hdfs.server.protocol.ReplicaRecoveryInfo;
 import org.apache.hadoop.ipc.RemoteException;
@@ -38,6 +40,7 @@ import java.util.ArrayList;
 import java.util.Arrays;
 import java.util.Collection;
 import java.util.List;
+import java.util.Iterator;
 
 /**
  * This class handles the block recovery work commands.
@@ -172,7 +175,97 @@ public class BlockRecoveryWorker {
 
       syncBlock(syncList);
     }
+    protected void recover( DatanodeCommand cmd) throws IOException {
+      List<BlockRecord> syncList = new ArrayList<>(locs.length);
+      int errorCount = 0;
+      int candidateReplicaCnt = 0;
+      Collection<String> livedatanodes=null;
+      // Check generation stamps, replica size and state. Replica must satisfy
+      // the following criteria to be included in syncList for recovery:
+      // - Valid generation stamp
+      // - Non-zero length
+      // - Original state is RWR or better
+      long start1=System.currentTimeMillis();
+     if(cmd instanceof BlockRecoveryCommand){
+       InterDatanodeProtocol.LOG.info(
+               "BlockRecoveryCommand revover =" + livedatanodes);
+       livedatanodes = ((BlockRecoveryCommand)cmd).getLivedatanodes();
+     }
+      for(DatanodeID id : locs) {
+        String current = id.getHostName();
+        InterDatanodeProtocol.LOG.info(
+                "Recovery Lives Nodes=" + livedatanodes
+                        + ",Current id (=" + current + ")"+",cmd="+cmd.getClass().getName()+",block="+block);
+        if(livedatanodes!=null && isExceptionNode(livedatanodes,current) ){
+          ++errorCount;
+          InterDatanodeProtocol.LOG.warn(
+                  "No recovery to obtain replica info for block (=" + block
+                          + ") from datanode (=" + id +",currentnode="+current+ "),Perhaps datanode is down ");
+          continue;
+        }
+        try {
+          DatanodeID bpReg =datanode.getBPOfferService(bpid).bpRegistration;
+          InterDatanodeProtocol proxyDN = bpReg.equals(id)?
+                  datanode: DataNode.createInterDataNodeProtocolProxy(id, conf,
+                  dnConf.socketTimeout, dnConf.connectToDnViaHostname);
+          ReplicaRecoveryInfo info = callInitReplicaRecovery(proxyDN, rBlock);
+          if (info != null &&
+                  info.getGenerationStamp() >= block.getGenerationStamp() &&
+                  info.getNumBytes() > 0) {
+            // Count the number of candidate replicas received.
+            ++candidateReplicaCnt;
+            if (info.getOriginalReplicaState().getValue() <=
+                    ReplicaState.RWR.getValue()) {
+              syncList.add(new BlockRecord(id, proxyDN, info));
+            } else {
+              if (LOG.isDebugEnabled()) {
+                LOG.debug("Block recovery: Ignored replica with invalid " +
+                        "original state: " + info + " from DataNode: " + id);
+              }
+            }
+          } else {
+            if (LOG.isDebugEnabled()) {
+              if (info == null) {
+                LOG.debug("Block recovery: DataNode: " + id + " does not have "
+                        + "replica for block: " + block);
+              } else {
+                LOG.debug("Block recovery: Ignored replica with invalid "
+                        + "generation stamp or length: " + info + " from " +
+                        "DataNode: " + id);
+              }
+            }
+          }
+        } catch (RecoveryInProgressException ripE) {
+          InterDatanodeProtocol.LOG.warn(
+                  "Recovery for replica " + block + " on data-node " + id
+                          + " is already in progress. Recovery id = "
+                          + rBlock.getNewGenerationStamp() + " is aborted.", ripE);
+          return;
+        } catch (IOException e) {
+          ++errorCount;
+          InterDatanodeProtocol.LOG.warn(
+                  "Failed to obtain replica info for block (=" + block
+                          + ") from datanode (=" + id +")", e);
+        }
+      }
 
+      if (errorCount == locs.length) {
+        throw new IOException("All datanodes failed: block=" + block
+                + ", datanodeids=" + Arrays.asList(locs));
+      }
+      // None of the replicas reported by DataNodes has the required original
+      // state, report the error.
+      if (candidateReplicaCnt > 0 && syncList.isEmpty()) {
+        throw new IOException("Found " + candidateReplicaCnt +
+                " replica(s) for block " + block + " but none is in " +
+                ReplicaState.RWR.name() + " or better state. datanodeids=" +
+                Arrays.asList(locs));
+      }
+      long end1=System.currentTimeMillis()-start1;
+      LOG.info("Block DatanodeID iterate cost=["+end1+"] ms" +rBlock.toString()
+              +",locations=" +Arrays.asList(locs));
+      syncBlock(syncList);
+    }
     /** Block synchronization. */
     void syncBlock(List<BlockRecord> syncList) throws IOException {
       ExtendedBlock block = rBlock.getBlock();
@@ -383,5 +476,39 @@ public class BlockRecoveryWorker {
     });
     d.start();
     return d;
+  }
+  public Daemon recoverBlocks(final String who,
+                              final Collection<RecoveringBlock> blocks ,final DatanodeCommand cmd) {
+    Daemon d = new Daemon(datanode.threadGroup, new Runnable() {
+      @Override
+      public void run() {
+        RecoveryTaskContiguous task=null;
+        for(RecoveringBlock b : blocks) {
+          try {
+            logRecoverBlock(who, b);
+            task = new RecoveryTaskContiguous(b);
+            long start =System.currentTimeMillis();
+            task.recover(cmd);
+            long end =System.currentTimeMillis()-start;
+            if(end>=500)
+            LOG.info("["+Thread.currentThread().getName()+"] recoverBlock cost=["+end+"] ms,bolck="+b.toString());
+          } catch (IOException e) {
+            LOG.warn("recoverBlocks FAILED: " + b, e);
+          }
+        }
+      }
+    });
+    d.start();
+    return d;
+  }
+  public boolean isExceptionNode( Collection<String> livedatanodes,String current){
+    Iterator<String> nodes = livedatanodes.iterator();
+    while (nodes.hasNext()) {
+      String livenode = nodes.next();
+      if (livenode.toLowerCase().equals(current.toLowerCase())) {
+        return false;
+      }
+    }
+    return true;
   }
 }

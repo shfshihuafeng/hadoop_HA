@@ -1410,8 +1410,14 @@ public class DatanodeManager {
         BlockInfoUnderConstruction[] blocks = nodeinfo
             .getLeaseRecoveryCommand(Integer.MAX_VALUE);
         if (blocks != null) {
+          LOG.info("handler heart lives="+Arrays.asList(datanodeMap.values().toArray())
+                        +",blocks size="  +blocks.length);
           BlockRecoveryCommand brCommand = new BlockRecoveryCommand(
               blocks.length);
+           Collection<DatanodeDescriptor> datanodeDescriptors = datanodeMap.values();
+          for (DatanodeDescriptor node : datanodeDescriptors) {
+            brCommand.addNode(node.getHostName());
+          }
           for (BlockInfoUnderConstruction b : blocks) {
             final DatanodeStorageInfo[] storages = b.getExpectedStorageLocations();
             // Skip stale nodes during recovery - not heart beated for some time (30s by default).
