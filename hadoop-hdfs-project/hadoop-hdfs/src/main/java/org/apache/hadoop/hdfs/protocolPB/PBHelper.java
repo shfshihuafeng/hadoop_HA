@@ -1021,6 +1021,9 @@ public class PBHelper {
     for (RecoveringBlock b : cmd.getRecoveringBlocks()) {
       builder.addBlocks(PBHelper.convert(b));
     }
+    for (String node : cmd.getLivedatanodes()) {
+      builder.addLivenodes(node);
+    }
     return builder.build();
   }
 
@@ -1173,7 +1176,7 @@ public class PBHelper {
     for (RecoveringBlockProto rbp : list) {
       recoveringBlocks.add(PBHelper.convert(rbp));
     }
-    return new BlockRecoveryCommand(recoveringBlocks);
+    return new BlockRecoveryCommand(recoveringBlocks, recoveryCmd.getLivenodesList());
   }
 
   public static BlockCommand convert(BlockCommandProto blkCmd) {

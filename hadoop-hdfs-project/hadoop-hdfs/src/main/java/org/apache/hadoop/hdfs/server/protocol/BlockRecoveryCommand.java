@@ -28,6 +28,7 @@ import org.apache.hadoop.hdfs.protocol.LocatedBlock;
 
 import com.google.common.base.Joiner;
 
+
 /**
  * BlockRecoveryCommand is an instruction to a data-node to recover
  * the specified blocks.
@@ -42,6 +43,7 @@ import com.google.common.base.Joiner;
 @InterfaceStability.Evolving
 public class BlockRecoveryCommand extends DatanodeCommand {
   final Collection<RecoveringBlock> recoveringBlocks;
+  Collection<String> livedatanodes=new ArrayList<>();
 
   /**
    * This is a block with locations from which it should be recovered
@@ -86,10 +88,15 @@ public class BlockRecoveryCommand extends DatanodeCommand {
   public BlockRecoveryCommand(int capacity) {
     this(new ArrayList<RecoveringBlock>(capacity));
   }
-  
+
   public BlockRecoveryCommand(Collection<RecoveringBlock> blocks) {
     super(DatanodeProtocol.DNA_RECOVERBLOCK);
     recoveringBlocks = blocks;
+  }
+  public BlockRecoveryCommand(Collection<RecoveringBlock> blocks,Collection<String> livedatanodes) {
+    super(DatanodeProtocol.DNA_RECOVERBLOCK);
+    recoveringBlocks = blocks;
+    this.livedatanodes=livedatanodes;
   }
 
   /**
@@ -99,13 +106,20 @@ public class BlockRecoveryCommand extends DatanodeCommand {
     return recoveringBlocks;
   }
 
+  public Collection<String> getLivedatanodes() {
+    return livedatanodes;
+  }
+
   /**
    * Add recovering block to the command.
    */
   public void add(RecoveringBlock block) {
     recoveringBlocks.add(block);
   }
-  
+
+  public void addNode(String livenode) {
+    livedatanodes.add(livenode);
+  }
   @Override
   public String toString() {
     StringBuilder sb = new StringBuilder();

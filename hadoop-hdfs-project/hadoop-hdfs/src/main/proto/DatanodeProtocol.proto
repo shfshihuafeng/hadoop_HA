@@ -120,6 +120,7 @@ message BlockIdCommandProto {
  */
 message BlockRecoveryCommandProto {
   repeated RecoveringBlockProto blocks = 1;
+  repeated  string livenodes = 2;
 }
 
 /**
