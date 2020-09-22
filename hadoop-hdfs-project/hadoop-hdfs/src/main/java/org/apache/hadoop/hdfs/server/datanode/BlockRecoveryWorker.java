@@ -187,14 +187,12 @@ public class BlockRecoveryWorker {
       // - Original state is RWR or better
       long start1=System.currentTimeMillis();
      if(cmd instanceof BlockRecoveryCommand){
-       InterDatanodeProtocol.LOG.info(
-               "BlockRecoveryCommand revover =" + livedatanodes);
        livedatanodes = ((BlockRecoveryCommand)cmd).getLivedatanodes();
      }
+      LOG.info("BlockRecoveryCommand revover =" + livedatanodes);
       for(DatanodeID id : locs) {
         String current = id.getHostName();
-        InterDatanodeProtocol.LOG.info(
-                "Recovery Lives Nodes=" + livedatanodes
+        LOG.info("Recovery Lives Nodes=" + livedatanodes
                         + ",Current id (=" + current + ")"+",cmd="+cmd.getClass().getName()+",block="+block);
         if(livedatanodes!=null && isExceptionNode(livedatanodes,current) ){
           ++errorCount;
